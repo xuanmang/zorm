@@ -276,7 +276,7 @@ pub const DB = struct {
     /// 在事务中执行函数
     /// 如果函数返回错误,自动回滚;否则自动提交
     pub fn runInTx(self: *DB, comptime func: anytype, args: anytype) !@TypeOf(@call(.auto, func, args)) {
-        const tx = try self.begin();
+        _ = try self.begin();
         errdefer self.rollback() catch {};
 
         const result = try @call(.auto, func, args);

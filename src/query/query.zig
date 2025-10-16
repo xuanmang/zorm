@@ -262,6 +262,7 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const []const u8 {
 
 /// INSERT 查询构建器 (骨架)
 pub fn InsertQuery(comptime T: type) type {
+    _ = T; // TODO: 使用类型参数进行反射
     return struct {
         const Self = @This();
         allocator: Allocator,
@@ -286,6 +287,7 @@ pub fn InsertQuery(comptime T: type) type {
 
 /// UPDATE 查询构建器 (骨架)
 pub fn UpdateQuery(comptime T: type) type {
+    _ = T; // TODO: 使用类型参数进行反射
     return struct {
         const Self = @This();
         allocator: Allocator,
@@ -310,6 +312,7 @@ pub fn UpdateQuery(comptime T: type) type {
 
 /// DELETE 查询构建器 (骨架)
 pub fn DeleteQuery(comptime T: type) type {
+    _ = T; // TODO: 使用类型参数进行反射
     return struct {
         const Self = @This();
         allocator: Allocator,
@@ -333,8 +336,9 @@ pub fn DeleteQuery(comptime T: type) type {
 }
 
 test "select query builder" {
-    const testing = std.testing;
-    const allocator = testing.allocator;
+    // TODO: 实现完整的测试
+    // const testing = std.testing;
+    // const allocator = testing.allocator;
 
     // 模拟 DB (需要实现)
     // var db = try DB.init(...);

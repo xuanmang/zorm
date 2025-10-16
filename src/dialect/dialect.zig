@@ -23,22 +23,10 @@ pub const Dialect = enum {
     /// Oracle: :1, :2, ...
     pub fn placeholder(comptime self: Dialect, index: usize) []const u8 {
         return comptime switch (self) {
-            .postgresql => blk: {
-                var buf: [16]u8 = undefined;
-                const str = std.fmt.bufPrint(&buf, "${d}", .{index}) catch unreachable;
-                break :blk str[0..str.len].*;
-            },
+            .postgresql => std.fmt.comptimePrint("${d}", .{index}),
             .mysql, .sqlite => "?",
-            .mssql => blk: {
-                var buf: [16]u8 = undefined;
-                const str = std.fmt.bufPrint(&buf, "@p{d}", .{index}) catch unreachable;
-                break :blk str[0..str.len].*;
-            },
-            .oracle => blk: {
-                var buf: [16]u8 = undefined;
-                const str = std.fmt.bufPrint(&buf, ":{d}", .{index}) catch unreachable;
-                break :blk str[0..str.len].*;
-            },
+            .mssql => std.fmt.comptimePrint("@p{d}", .{index}),
+            .oracle => std.fmt.comptimePrint(":{d}", .{index}),
         };
     }
 

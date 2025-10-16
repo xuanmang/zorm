@@ -50,26 +50,26 @@ fn demoDialect() void {
     std.debug.print("   - 所有方言差异在编译时解决,零运行时开销\n\n", .{});
 
     // PostgreSQL
-    comptime {
-        const pg = zorm.Dialect.postgresql;
+    {
+        const pg = comptime zorm.Dialect.postgresql;
         std.debug.print("   PostgreSQL:\n", .{});
-        std.debug.print("     占位符: {s}\n", .{pg.placeholder(1)});
-        std.debug.print("     支持 RETURNING: {}\n", .{pg.supports(.returning)});
-        std.debug.print("     支持 JSONB: {}\n", .{pg.supports(.jsonb)});
-        const quote = pg.identQuote();
+        std.debug.print("     占位符: {s}\n", .{comptime pg.placeholder(1)});
+        std.debug.print("     支持 RETURNING: {any}\n", .{comptime pg.supports(.returning)});
+        std.debug.print("     支持 JSONB: {any}\n", .{comptime pg.supports(.jsonb)});
+        const quote = comptime pg.identQuote();
         std.debug.print("     标识符引用: {c}table{c}\n", .{ quote.left, quote.right });
     }
 
     std.debug.print("\n", .{});
 
     // MySQL
-    comptime {
-        const mysql = zorm.Dialect.mysql;
+    {
+        const mysql = comptime zorm.Dialect.mysql;
         std.debug.print("   MySQL:\n", .{});
-        std.debug.print("     占位符: {s}\n", .{mysql.placeholder(1)});
-        std.debug.print("     支持 RETURNING: {}\n", .{mysql.supports(.returning)});
-        std.debug.print("     UPSERT 语法: {s}\n", .{mysql.upsertClause()});
-        const quote = mysql.identQuote();
+        std.debug.print("     占位符: {s}\n", .{comptime mysql.placeholder(1)});
+        std.debug.print("     支持 RETURNING: {any}\n", .{comptime mysql.supports(.returning)});
+        std.debug.print("     UPSERT 语法: {s}\n", .{comptime mysql.upsertClause()});
+        const quote = comptime mysql.identQuote();
         std.debug.print("     标识符引用: {c}table{c}\n", .{ quote.left, quote.right });
     }
 
@@ -129,7 +129,7 @@ fn demoSQLBuilding(allocator: std.mem.Allocator) !void {
     // 创建模拟的 DB 实例来构建 SQL
     // 注意: 这只是为了演示 API,不会实际执行查询
 
-    std.debug.print("   当前版本: v{}\n", .{zorm.version});
+    std.debug.print("   当前版本: v{any}\n", .{zorm.version});
     std.debug.print("   支持的方言: PostgreSQL, MySQL, SQLite, MSSQL, Oracle\n", .{});
     std.debug.print("   特性: comptime 泛型, 零开销抽象, 显式内存管理\n", .{});
 

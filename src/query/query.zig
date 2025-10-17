@@ -716,6 +716,18 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 /// ## 参数
 /// - T: 模型类型
 /// - dialect: 数据库方言 (编译时确定)
+///
+/// ## 示例
+/// ```zig
+/// var query = try db.newUpdate(User);
+/// defer query.deinit();
+///
+/// try query.set("name", "new_name")
+///          .set("email", "new_email@example.com")
+///          .where("id = $1", .{1});
+///
+/// const sql = try query.build();
+/// ```
 pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
     _ = T; // TODO: 使用类型参数进行反射
     const DBType = db_mod.DB(dialect);
@@ -723,25 +735,191 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
     return struct {
         const Self = @This();
 
+        /// SET子句：字段名和值
+        const SetClause = struct {
+            column: []const u8,
+            value: QueryArg,
+        };
+
         allocator: Allocator,
         db: *DBType,
         table_name: []const u8,
+        set_clauses: std.ArrayList(SetClause),
+        where_clauses: std.ArrayList(WhereClause),
+        returning_columns: ?[]const []const u8,
 
+        /// 初始化更新查询构建器
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
             self.* = .{
                 .allocator = allocator,
                 .db = db,
                 .table_name = table_name,
+                .set_clauses = .{},
+                .where_clauses = .{},
+                .returning_columns = null,
             };
+
             return self;
         }
 
+        /// 释放资源
         pub fn deinit(self: *Self) void {
+            self.set_clauses.deinit(self.allocator);
+
+            // 释放 WHERE 子句参数
+            for (self.where_clauses.items) |clause| {
+                self.allocator.free(clause.args);
+            }
+            self.where_clauses.deinit(self.allocator);
+
             self.allocator.destroy(self);
         }
 
-        // TODO: 实现完整的 UPDATE 功能 (Story 012)
+        /// 设置要更新的字段
+        ///
+        /// ## 参数
+        /// - column: 列名
+        /// - value: 新值
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.set("name", "Alice");
+        /// try query.set("age", 25);
+        /// ```
+        pub fn set(self: *Self, column: []const u8, value: anytype) !*Self {
+            const clause = SetClause{
+                .column = column,
+                .value = QueryArg.fromValue(value),
+            };
+            try self.set_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 WHERE 条件 (AND)
+        pub fn where(self: *Self, condition: []const u8, args: anytype) !*Self {
+            const args_slice = try allocArgs(self.allocator, args);
+            const clause = WhereClause{
+                .condition = condition,
+                .args = args_slice,
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 WHERE 条件 (OR)
+        pub fn whereOr(self: *Self, condition: []const u8, args: anytype) !*Self {
+            const args_slice = try allocArgs(self.allocator, args);
+            const clause = WhereClause{
+                .condition = condition,
+                .args = args_slice,
+                .operator = .or_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
+        ///
+        /// ## 参数
+        /// - cols: 要返回的列名数组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.returning(&.{"id", "updated_at"});
+        /// ```
+        pub fn returning(self: *Self, cols: []const []const u8) !*Self {
+            // 编译时检查方言是否支持 RETURNING
+            if (comptime !dialect.supportsReturning()) {
+                @compileError("RETURNING is not supported by " ++ @tagName(dialect));
+            }
+
+            self.returning_columns = cols;
+            return self;
+        }
+
+        /// 构建 UPDATE SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            if (self.set_clauses.items.len == 0) {
+                return error.NoColumnsToUpdate;
+            }
+
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
+
+            // UPDATE table
+            try buf.appendSlice(self.allocator, "UPDATE ");
+            try buf.appendSlice(self.allocator, self.table_name);
+
+            // SET column = value
+            try buf.appendSlice(self.allocator, " SET ");
+
+            var param_index: usize = 1;
+            for (self.set_clauses.items, 0..) |set_clause, i| {
+                if (i > 0) try buf.appendSlice(self.allocator, ", ");
+
+                try buf.appendSlice(self.allocator, set_clause.column);
+                try buf.appendSlice(self.allocator, " = ");
+
+                // 生成占位符
+                switch (dialect) {
+                    .postgresql => try std.fmt.format(buf.writer(self.allocator), "${d}", .{param_index}),
+                    .mysql, .sqlite => try buf.appendSlice(self.allocator, "?"),
+                }
+                param_index += 1;
+            }
+
+            // WHERE
+            if (self.where_clauses.items.len > 0) {
+                try buf.appendSlice(self.allocator, " WHERE ");
+                for (self.where_clauses.items, 0..) |clause, i| {
+                    if (i > 0) {
+                        try buf.appendSlice(self.allocator, " ");
+                        try buf.appendSlice(self.allocator, clause.operator.toSQL());
+                        try buf.appendSlice(self.allocator, " ");
+                    }
+                    try buf.appendSlice(self.allocator, clause.condition);
+                }
+            }
+
+            // RETURNING (PostgreSQL/SQLite)
+            if (self.returning_columns) |ret_cols| {
+                try buf.appendSlice(self.allocator, " RETURNING ");
+                for (ret_cols, 0..) |col, i| {
+                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                    try buf.appendSlice(self.allocator, col);
+                }
+            }
+
+            return buf.toOwnedSlice(self.allocator);
+        }
+
+        /// 执行更新查询
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数 (SET + WHERE)
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            // 先添加 SET 参数
+            for (self.set_clauses.items) |set_clause| {
+                try all_args.append(self.allocator, set_clause.value);
+            }
+
+            // 再添加 WHERE 参数
+            for (self.where_clauses.items) |clause| {
+                try all_args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 执行查询
+            const result = try self.db.exec(query_str, all_args.items);
+            defer result.close();
+        }
     };
 }
 
@@ -1272,5 +1450,160 @@ test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
         "ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name " ++
         "RETURNING id";
 
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+// ============================================
+// UpdateQuery 测试
+// ============================================
+
+test "UpdateQuery: 基本实例化" {
+    const PostgresUpdateQuery = UpdateQuery(User, .postgresql);
+    const MySQLUpdateQuery = UpdateQuery(User, .mysql);
+    const SQLiteUpdateQuery = UpdateQuery(User, .sqlite);
+
+    try std.testing.expect(PostgresUpdateQuery != MySQLUpdateQuery);
+    try std.testing.expect(PostgresUpdateQuery != SQLiteUpdateQuery);
+    try std.testing.expect(MySQLUpdateQuery != SQLiteUpdateQuery);
+}
+
+test "UpdateQuery: 基本UPDATE (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Alice");
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("UPDATE users SET name = $1", sql);
+}
+
+test "UpdateQuery: 基本UPDATE (MySQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .mysql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Bob");
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("UPDATE users SET name = ?", sql);
+}
+
+test "UpdateQuery: 多个SET子句" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Alice");
+    _ = try query.set("email", "alice@example.com");
+    _ = try query.set("age", 25);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("UPDATE users SET name = $1, email = $2, age = $3", sql);
+}
+
+test "UpdateQuery: UPDATE with WHERE" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Alice");
+    _ = try query.where("id = $2", .{1});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("UPDATE users SET name = $1 WHERE id = $2", sql);
+}
+
+test "UpdateQuery: UPDATE with multiple WHERE (AND/OR)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Alice");
+    _ = try query.where("age > $2", .{18});
+    _ = try query.where("status = $3", .{"active"});
+    _ = try query.whereOr("role = $4", .{"admin"});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "UPDATE users SET name = $1 WHERE age > $2 AND status = $3 OR role = $4";
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "UpdateQuery: UPDATE with RETURNING (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Alice");
+    _ = try query.where("id = $2", .{1});
+    _ = try query.returning(&.{ "id", "updated_at" });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("UPDATE users SET name = $1 WHERE id = $2 RETURNING id, updated_at", sql);
+}
+
+test "UpdateQuery: 完整复杂UPDATE (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.set("name", "Alice");
+    _ = try query.set("email", "alice@example.com");
+    _ = try query.set("age", 25);
+    _ = try query.where("id = $4", .{1});
+    _ = try query.where("status = $5", .{"active"});
+    _ = try query.returning(&.{"id"});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "UPDATE users SET name = $1, email = $2, age = $3 WHERE id = $4 AND status = $5 RETURNING id";
     try std.testing.expectEqualStrings(expected, sql);
 }

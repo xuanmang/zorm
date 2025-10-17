@@ -928,6 +928,17 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 /// ## 参数
 /// - T: 模型类型
 /// - dialect: 数据库方言 (编译时确定)
+///
+/// ## 示例
+/// ```zig
+/// var query = try db.newDelete(User);
+/// defer query.deinit();
+///
+/// try query.where("age < $1", .{18})
+///          .where("email IS NULL", .{});
+///
+/// const sql = try query.build();
+/// ```
 pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
     _ = T; // TODO: 使用类型参数进行反射
     const DBType = db_mod.DB(dialect);
@@ -938,22 +949,130 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         allocator: Allocator,
         db: *DBType,
         table_name: []const u8,
+        where_clauses: std.ArrayList(WhereClause),
+        returning_columns: ?[]const []const u8,
 
+        /// 初始化删除查询构建器
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
             self.* = .{
                 .allocator = allocator,
                 .db = db,
                 .table_name = table_name,
+                .where_clauses = .{},
+                .returning_columns = null,
             };
+
             return self;
         }
 
+        /// 释放资源
         pub fn deinit(self: *Self) void {
+            // 释放 WHERE 子句参数
+            for (self.where_clauses.items) |clause| {
+                self.allocator.free(clause.args);
+            }
+            self.where_clauses.deinit(self.allocator);
+
             self.allocator.destroy(self);
         }
 
-        // TODO: 实现完整的 DELETE 功能 (Story 013)
+        /// 添加 WHERE 条件 (AND)
+        pub fn where(self: *Self, condition: []const u8, args: anytype) !*Self {
+            const args_slice = try allocArgs(self.allocator, args);
+            const clause = WhereClause{
+                .condition = condition,
+                .args = args_slice,
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 WHERE 条件 (OR)
+        pub fn whereOr(self: *Self, condition: []const u8, args: anytype) !*Self {
+            const args_slice = try allocArgs(self.allocator, args);
+            const clause = WhereClause{
+                .condition = condition,
+                .args = args_slice,
+                .operator = .or_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
+        ///
+        /// ## 参数
+        /// - cols: 要返回的列名数组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.returning(&.{"id", "name"});
+        /// ```
+        pub fn returning(self: *Self, cols: []const []const u8) !*Self {
+            // 编译时检查方言是否支持 RETURNING
+            if (comptime !dialect.supportsReturning()) {
+                @compileError("RETURNING is not supported by " ++ @tagName(dialect));
+            }
+
+            self.returning_columns = cols;
+            return self;
+        }
+
+        /// 构建 DELETE SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
+
+            // DELETE FROM table
+            try buf.appendSlice(self.allocator, "DELETE FROM ");
+            try buf.appendSlice(self.allocator, self.table_name);
+
+            // WHERE
+            if (self.where_clauses.items.len > 0) {
+                try buf.appendSlice(self.allocator, " WHERE ");
+                for (self.where_clauses.items, 0..) |clause, i| {
+                    if (i > 0) {
+                        try buf.appendSlice(self.allocator, " ");
+                        try buf.appendSlice(self.allocator, clause.operator.toSQL());
+                        try buf.appendSlice(self.allocator, " ");
+                    }
+                    try buf.appendSlice(self.allocator, clause.condition);
+                }
+            }
+
+            // RETURNING (PostgreSQL/SQLite)
+            if (self.returning_columns) |ret_cols| {
+                try buf.appendSlice(self.allocator, " RETURNING ");
+                for (ret_cols, 0..) |col, i| {
+                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                    try buf.appendSlice(self.allocator, col);
+                }
+            }
+
+            return buf.toOwnedSlice(self.allocator);
+        }
+
+        /// 执行删除查询
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            for (self.where_clauses.items) |clause| {
+                try all_args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 执行查询
+            const result = try self.db.exec(query_str, all_args.items);
+            defer result.close();
+        }
     };
 }
 
@@ -1605,5 +1724,133 @@ test "UpdateQuery: 完整复杂UPDATE (PostgreSQL)" {
     defer std.testing.allocator.free(sql);
 
     const expected = "UPDATE users SET name = $1, email = $2, age = $3 WHERE id = $4 AND status = $5 RETURNING id";
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+// ============================================
+// DeleteQuery 测试
+// ============================================
+
+test "DeleteQuery: 基本实例化" {
+    const PostgresDeleteQuery = DeleteQuery(User, .postgresql);
+    const MySQLDeleteQuery = DeleteQuery(User, .mysql);
+    const SQLiteDeleteQuery = DeleteQuery(User, .sqlite);
+
+    try std.testing.expect(PostgresDeleteQuery != MySQLDeleteQuery);
+    try std.testing.expect(PostgresDeleteQuery != SQLiteDeleteQuery);
+    try std.testing.expect(MySQLDeleteQuery != SQLiteDeleteQuery);
+}
+
+test "DeleteQuery: 简单DELETE (无WHERE)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users", sql);
+}
+
+test "DeleteQuery: DELETE with WHERE (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.where("id = $1", .{1});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE id = $1", sql);
+}
+
+test "DeleteQuery: DELETE with WHERE (MySQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .mysql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.where("age < ?", .{18});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE age < ?", sql);
+}
+
+test "DeleteQuery: DELETE with multiple WHERE (AND/OR)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.where("age < $1", .{18});
+    _ = try query.where("status = $2", .{"inactive"});
+    _ = try query.whereOr("role = $3", .{"guest"});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "DELETE FROM users WHERE age < $1 AND status = $2 OR role = $3";
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "DeleteQuery: DELETE with RETURNING (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.where("id = $1", .{1});
+    _ = try query.returning(&.{ "id", "name" });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE id = $1 RETURNING id, name", sql);
+}
+
+test "DeleteQuery: 完整复杂DELETE (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.where("age < $1", .{18});
+    _ = try query.where("status = $2", .{"inactive"});
+    _ = try query.whereOr("deleted_at IS NOT NULL", .{});
+    _ = try query.returning(&.{ "id", "name", "deleted_at" });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "DELETE FROM users WHERE age < $1 AND status = $2 OR deleted_at IS NOT NULL RETURNING id, name, deleted_at";
     try std.testing.expectEqualStrings(expected, sql);
 }

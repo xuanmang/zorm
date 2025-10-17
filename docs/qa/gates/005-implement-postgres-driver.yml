@@ -1,0 +1,164 @@
+schema: 1
+story: '005'
+story_title: '实现 PostgreSQL 驱动'
+gate: FAIL
+status_reason: '存在P0级数据正确性缺陷：NULL值检测功能不工作，rows_affected功能缺失，导致4/15集成测试失败'
+reviewer: 'Quinn (Test Architect)'
+updated: '2025-01-17T10:30:00+08:00'
+
+top_issues:
+  - severity: high
+    category: data_correctness
+    title: 'NULL值检测功能完全不工作'
+    description: 'PostgresRow.isNull() 始终返回false，用户无法区分NULL和空字符串，导致数据处理错误'
+    refs:
+      - 'src/driver/postgres.zig:344-350'
+      - 'tests/integration/postgres_test.zig:275'
+    impact: '数据正确性缺陷，可能导致业务逻辑错误'
+    suggested_owner: dev
+
+  - severity: high
+    category: functionality
+    title: 'rows_affected 功能缺失'
+    description: 'exec() 方法始终返回 rows_affected=0，用户无法知道UPDATE/DELETE影响了多少行'
+    refs:
+      - 'src/driver/postgres.zig:154-156'
+      - 'tests/integration/postgres_test.zig:102,126,147'
+    impact: '影响关键业务逻辑，用户无法验证操作结果'
+    suggested_owner: dev
+
+  - severity: medium
+    category: error_handling
+    title: '错误信息丢失'
+    description: '所有pg.zig错误都映射为通用QueryFailed/ConnectionFailed，丢失具体错误信息'
+    refs:
+      - 'src/driver/postgres.zig:99-104,165-170'
+    impact: '调试困难，用户无法区分不同类型的错误'
+    suggested_owner: dev
+
+  - severity: medium
+    category: memory
+    title: '配置字符串内存可能浪费'
+    description: '保存配置字符串副本但pg.Pool可能已经复制，需要验证'
+    refs:
+      - 'src/driver/postgres.zig:34-37,76-79'
+    impact: '轻微内存浪费'
+    suggested_owner: dev
+
+waiver:
+  active: false
+
+quality_score: 40
+# 计算: 100 - (20×2个FAIL) - (10×2个CONCERNS) = 40
+
+expires: '2025-01-31T23:59:59+08:00'
+
+evidence:
+  tests_reviewed: 15
+  tests_passed: 11
+  tests_failed: 4
+  risks_identified: 4
+  trace:
+    ac_covered: [1, 2, 3, 5, 7]  # AC 1,2,3,5,7 有测试覆盖
+    ac_gaps: [4, 6]  # AC 4 (NULL处理), AC 6 (错误处理) 有缺陷
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: '参数化查询防止SQL注入；已验证SQL注入防护测试通过'
+
+  performance:
+    status: PASS
+    notes: '使用连接池(size=5)；编译时多态避免虚函数开销；架构合理'
+
+  reliability:
+    status: FAIL
+    notes: 'NULL值检测失败和rows_affected缺失严重影响数据正确性和可靠性'
+
+  maintainability:
+    status: PASS
+    notes: '代码结构清晰，注释良好，函数分解合理；部分内部函数缺文档'
+
+recommendations:
+  immediate:  # 必须在合并前修复
+    - action: '修复 PostgresRow.isNull() 实现，正确检测NULL值'
+      refs: ['src/driver/postgres.zig:344-350']
+      priority: P0
+      estimated_effort: '2-4小时'
+
+    - action: '实现 rows_affected 功能，使用RETURNING或其他机制'
+      refs: ['src/driver/postgres.zig:154-156']
+      priority: P0
+      estimated_effort: '3-5小时'
+
+    - action: '验证所有集成测试通过 (目前4/15失败)'
+      refs: ['tests/integration/postgres_test.zig']
+      priority: P0
+      estimated_effort: '1小时 (修复后)'
+
+  future:  # 可以后续Story处理
+    - action: '改进错误处理，保留原始错误消息或细化错误类型'
+      refs: ['src/driver/postgres.zig:99-104']
+      priority: P1
+      estimated_effort: '4-6小时'
+
+    - action: '验证并优化配置字符串内存管理'
+      refs: ['src/driver/postgres.zig:34-37']
+      priority: P2
+      estimated_effort: '2小时'
+
+    - action: '添加并发连接测试和性能测试'
+      refs: ['tests/integration/']
+      priority: P2
+      estimated_effort: '4-8小时'
+
+    - action: '为内部函数添加文档注释'
+      refs: ['src/driver/postgres.zig']
+      priority: P3
+      estimated_effort: '2-3小时'
+
+test_failures:
+  - test_name: 'PostgreSQL exec - INSERT with parameters'
+    error: 'expected 1, found 0'
+    root_cause: 'rows_affected功能未实现'
+
+  - test_name: 'PostgreSQL exec - UPDATE with parameters'
+    error: 'expected 1, found 0'
+    root_cause: 'rows_affected功能未实现'
+
+  - test_name: 'PostgreSQL exec - DELETE with parameters'
+    error: 'expected 1, found 0'
+    root_cause: 'rows_affected功能未实现'
+
+  - test_name: 'PostgreSQL query - NULL handling'
+    error: 'expected true, found false'
+    root_cause: 'isNull()始终返回false'
+
+architecture_notes: |
+  **优点:**
+  - 使用pg.zig库避免重新实现复杂的libpq绑定
+  - Connection接口使用编译时多态，零运行时开销
+  - VTable模式用于结果集，合理的运行时多态
+  - 参数化查询防止SQL注入
+
+  **问题:**
+  - Story描述提到libpq但实际使用pg.zig，文档与实现不一致
+  - Connection接口设计与pg.zig能力不完全匹配 (rows_affected)
+  - 需要调研pg.zig API是否支持NULL检测和行数统计
+
+next_steps: |
+  1. **立即行动 (阻塞合并):**
+     - 研究pg.zig的Row API，实现正确的NULL检测
+     - 研究pg.zig的Result API，实现rows_affected获取
+     - 重新运行测试，确保15/15通过
+
+  2. **短期改进 (建议在本Sprint完成):**
+     - 改进错误处理，保留错误详情
+     - 优化内存管理
+
+  3. **长期计划 (后续Story):**
+     - 添加性能和并发测试
+     - 完善文档注释
+
+  **预计修复时间:** 6-10小时（P0问题）
+  **建议状态:** 修复P0问题后重新提交QA评审

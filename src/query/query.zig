@@ -5,10 +5,15 @@
 //! - InsertQuery - INSERT 查询
 //! - UpdateQuery - UPDATE 查询
 //! - DeleteQuery - DELETE 查询
+//!
+//! ## 设计原则
+//! - 使用 comptime 泛型实现类型安全
+//! - 链式 API 提供流畅的查询构建体验
+//! - 方言感知,根据不同数据库生成正确的 SQL
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const DB = @import("../core/db.zig").DB;
+const db_mod = @import("../core/db.zig");
 const Dialect = @import("../dialect/dialect.zig").Dialect;
 
 /// WHERE 子句操作符
@@ -25,12 +30,36 @@ pub const WhereClause = struct {
 };
 
 /// SELECT 查询构建器
-pub fn SelectQuery(comptime T: type) type {
+///
+/// ## 参数
+/// - T: 模型类型
+/// - dialect: 数据库方言 (编译时确定)
+///
+/// ## 示例
+/// ```zig
+/// const User = struct {
+///     id: i64,
+///     name: []const u8,
+/// };
+///
+/// var query = try db.newSelect(User);
+/// defer query.deinit();
+///
+/// try query.column("id").column("name")
+///          .where("age > ?", .{18})
+///          .orderBy("id DESC")
+///          .limit(10);
+///
+/// const sql = try query.build();
+/// ```
+pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
+    const DBType = db_mod.DB(dialect);
+
     return struct {
         const Self = @This();
 
         allocator: Allocator,
-        db: *DB,
+        db: *DBType,
         columns: std.ArrayList([]const u8),
         table_name: []const u8,
         where_clauses: std.ArrayList(WhereClause),
@@ -40,7 +69,7 @@ pub fn SelectQuery(comptime T: type) type {
         distinct_value: bool,
 
         /// 初始化查询构建器
-        pub fn init(allocator: Allocator, db: *DB, table_name: []const u8) !*Self {
+        pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
@@ -179,9 +208,8 @@ pub fn SelectQuery(comptime T: type) type {
                 }
             }
 
-            // LIMIT/OFFSET
-            const dialect_type = self.db.getDialect();
-            const limit_clause = dialect_type.limitClause(self.limit_value, self.offset_value);
+            // LIMIT/OFFSET (使用方言特定的语法)
+            const limit_clause = dialect.limitClause(self.limit_value, self.offset_value);
             if (limit_clause.len > 0) {
                 try buf.appendSlice(limit_clause);
             }
@@ -209,14 +237,14 @@ pub fn SelectQuery(comptime T: type) type {
                 return error.NoRows;
             }
 
-            // TODO: 实现完整的扫描逻辑
+            // TODO: 实现完整的扫描逻辑 (Story 010)
             return error.ScanError;
         }
 
         /// 执行查询并扫描多条记录
         pub fn scan(self: *Self) ![]T {
             _ = self;
-            // TODO: 实现完整的扫描逻辑
+            // TODO: 实现完整的扫描逻辑 (Story 010)
             return error.ScanError;
         }
     };
@@ -260,16 +288,23 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const []const u8 {
     return result;
 }
 
-/// INSERT 查询构建器 (骨架)
-pub fn InsertQuery(comptime T: type) type {
+/// INSERT 查询构建器
+///
+/// ## 参数
+/// - T: 模型类型
+/// - dialect: 数据库方言 (编译时确定)
+pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
     _ = T; // TODO: 使用类型参数进行反射
+    const DBType = db_mod.DB(dialect);
+
     return struct {
         const Self = @This();
+
         allocator: Allocator,
-        db: *DB,
+        db: *DBType,
         table_name: []const u8,
 
-        pub fn init(allocator: Allocator, db: *DB, table_name: []const u8) !*Self {
+        pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
             self.* = .{
                 .allocator = allocator,
@@ -282,19 +317,28 @@ pub fn InsertQuery(comptime T: type) type {
         pub fn deinit(self: *Self) void {
             self.allocator.destroy(self);
         }
+
+        // TODO: 实现完整的 INSERT 功能 (Story 011)
     };
 }
 
-/// UPDATE 查询构建器 (骨架)
-pub fn UpdateQuery(comptime T: type) type {
+/// UPDATE 查询构建器
+///
+/// ## 参数
+/// - T: 模型类型
+/// - dialect: 数据库方言 (编译时确定)
+pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
     _ = T; // TODO: 使用类型参数进行反射
+    const DBType = db_mod.DB(dialect);
+
     return struct {
         const Self = @This();
+
         allocator: Allocator,
-        db: *DB,
+        db: *DBType,
         table_name: []const u8,
 
-        pub fn init(allocator: Allocator, db: *DB, table_name: []const u8) !*Self {
+        pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
             self.* = .{
                 .allocator = allocator,
@@ -307,19 +351,28 @@ pub fn UpdateQuery(comptime T: type) type {
         pub fn deinit(self: *Self) void {
             self.allocator.destroy(self);
         }
+
+        // TODO: 实现完整的 UPDATE 功能 (Story 012)
     };
 }
 
-/// DELETE 查询构建器 (骨架)
-pub fn DeleteQuery(comptime T: type) type {
+/// DELETE 查询构建器
+///
+/// ## 参数
+/// - T: 模型类型
+/// - dialect: 数据库方言 (编译时确定)
+pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
     _ = T; // TODO: 使用类型参数进行反射
+    const DBType = db_mod.DB(dialect);
+
     return struct {
         const Self = @This();
+
         allocator: Allocator,
-        db: *DB,
+        db: *DBType,
         table_name: []const u8,
 
-        pub fn init(allocator: Allocator, db: *DB, table_name: []const u8) !*Self {
+        pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
             self.* = .{
                 .allocator = allocator,
@@ -332,33 +385,29 @@ pub fn DeleteQuery(comptime T: type) type {
         pub fn deinit(self: *Self) void {
             self.allocator.destroy(self);
         }
+
+        // TODO: 实现完整的 DELETE 功能 (Story 013)
     };
 }
 
-test "select query builder" {
-    // TODO: 实现完整的测试
-    // const testing = std.testing;
-    // const allocator = testing.allocator;
+// ============================================
+// 单元测试
+// ============================================
 
-    // 模拟 DB (需要实现)
-    // var db = try DB.init(...);
-    // defer db.deinit();
+test "查询构建器基本功能" {
+    // 验证查询构建器可以为不同方言实例化
+    const User = struct {
+        id: i64,
+        name: []const u8,
+        pub const table_name = "users";
+    };
 
-    // const User = struct {
-    //     id: i64,
-    //     name: []const u8,
-    // };
+    const PostgresSelectQuery = SelectQuery(User, .postgresql);
+    const MySQLSelectQuery = SelectQuery(User, .mysql);
+    const SQLiteSelectQuery = SelectQuery(User, .sqlite);
 
-    // var query = try SelectQuery(User).init(allocator, db, "users");
-    // defer query.deinit();
-
-    // _ = try query.column("id").column("name");
-    // _ = try query.where("id = ?", .{123});
-    // _ = try query.orderBy("id DESC");
-    // _ = try query.limit(10);
-
-    // const sql = try query.build();
-    // defer allocator.free(sql);
-
-    // std.debug.print("SQL: {s}\n", .{sql});
+    // 验证它们是不同的类型
+    try std.testing.expect(PostgresSelectQuery != MySQLSelectQuery);
+    try std.testing.expect(PostgresSelectQuery != SQLiteSelectQuery);
+    try std.testing.expect(MySQLSelectQuery != SQLiteSelectQuery);
 }

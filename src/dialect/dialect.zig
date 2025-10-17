@@ -13,20 +13,14 @@ pub const Dialect = enum {
     postgresql,
     mysql,
     sqlite,
-    mssql,
-    oracle,
 
     /// 获取占位符语法 (编译时)
     /// PostgreSQL: $1, $2, ...
     /// MySQL/SQLite: ?, ?, ...
-    /// MSSQL: @p1, @p2, ...
-    /// Oracle: :1, :2, ...
     pub fn placeholder(comptime self: Dialect, index: usize) []const u8 {
         return comptime switch (self) {
             .postgresql => std.fmt.comptimePrint("${d}", .{index}),
             .mysql, .sqlite => "?",
-            .mssql => std.fmt.comptimePrint("@p{d}", .{index}),
-            .oracle => std.fmt.comptimePrint(":{d}", .{index}),
         };
     }
 
@@ -35,8 +29,6 @@ pub const Dialect = enum {
         return comptime switch (self) {
             .postgresql, .sqlite => .{ .left = '"', .right = '"' },
             .mysql => .{ .left = '`', .right = '`' },
-            .mssql => .{ .left = '[', .right = ']' },
-            .oracle => .{ .left = '"', .right = '"' },
         };
     }
 
@@ -79,30 +71,6 @@ pub const Dialect = enum {
                 .generate_series => true, // generate_series() 函数
                 .listen_notify => false,
             },
-            .mssql => switch (feature) {
-                .returning => true, // OUTPUT 子句
-                .cte => true,
-                .arrays => false,
-                .jsonb => true, // JSON 函数支持
-                .on_conflict => false,
-                .window_functions => true,
-                .lateral_join => true, // CROSS APPLY
-                .upsert => true, // MERGE
-                .generate_series => false,
-                .listen_notify => false,
-            },
-            .oracle => switch (feature) {
-                .returning => true,
-                .cte => true,
-                .arrays => true, // VARRAY, NESTED TABLE
-                .jsonb => true, // JSON 类型
-                .on_conflict => false,
-                .window_functions => true,
-                .lateral_join => true,
-                .upsert => true, // MERGE
-                .generate_series => false,
-                .listen_notify => false,
-            },
         };
     }
 
@@ -112,8 +80,6 @@ pub const Dialect = enum {
             .postgresql => "ON CONFLICT",
             .mysql => "ON DUPLICATE KEY UPDATE",
             .sqlite => "ON CONFLICT",
-            .mssql => "MERGE", // MSSQL 使用 MERGE 语句
-            .oracle => "MERGE",
         };
     }
 
@@ -139,40 +105,6 @@ pub const Dialect = enum {
 
                 break :blk str[0..str.len].*;
             },
-            .mssql => blk: {
-                // MSSQL 使用 OFFSET FETCH
-                var buf: [64]u8 = undefined;
-                var str: []const u8 = "";
-
-                if (offset) |o| {
-                    if (limit) |l| {
-                        str = std.fmt.bufPrint(&buf, " OFFSET {d} ROWS FETCH NEXT {d} ROWS ONLY", .{ o, l }) catch unreachable;
-                    } else {
-                        str = std.fmt.bufPrint(&buf, " OFFSET {d} ROWS", .{o}) catch unreachable;
-                    }
-                } else if (limit) |l| {
-                    str = std.fmt.bufPrint(&buf, " OFFSET 0 ROWS FETCH NEXT {d} ROWS ONLY", .{l}) catch unreachable;
-                }
-
-                break :blk str[0..str.len].*;
-            },
-            .oracle => blk: {
-                // Oracle 12c+ 使用 OFFSET FETCH
-                var buf: [64]u8 = undefined;
-                var str: []const u8 = "";
-
-                if (offset) |o| {
-                    if (limit) |l| {
-                        str = std.fmt.bufPrint(&buf, " OFFSET {d} ROWS FETCH NEXT {d} ROWS ONLY", .{ o, l }) catch unreachable;
-                    } else {
-                        str = std.fmt.bufPrint(&buf, " OFFSET {d} ROWS", .{o}) catch unreachable;
-                    }
-                } else if (limit) |l| {
-                    str = std.fmt.bufPrint(&buf, " FETCH NEXT {d} ROWS ONLY", .{l}) catch unreachable;
-                }
-
-                break :blk str[0..str.len].*;
-            },
         };
     }
 
@@ -182,8 +114,6 @@ pub const Dialect = enum {
             .postgresql => "SERIAL",
             .mysql => "AUTO_INCREMENT",
             .sqlite => "AUTOINCREMENT",
-            .mssql => "IDENTITY(1,1)",
-            .oracle => "GENERATED ALWAYS AS IDENTITY",
         };
     }
 
@@ -193,9 +123,38 @@ pub const Dialect = enum {
             .postgresql => "CURRENT_TIMESTAMP",
             .mysql => "CURRENT_TIMESTAMP",
             .sqlite => "CURRENT_TIMESTAMP",
-            .mssql => "GETDATE()",
-            .oracle => "CURRENT_TIMESTAMP",
         };
+    }
+
+    // ============================================
+    // 便捷特性检测函数 (按 Story 007 规范)
+    // ============================================
+
+    /// 检查是否支持 RETURNING 子句 (编译时)
+    pub fn supportsReturning(comptime self: Dialect) bool {
+        return comptime self.supports(.returning);
+    }
+
+    /// 检查是否支持 ON CONFLICT 子句 (编译时)
+    pub fn supportsOnConflict(comptime self: Dialect) bool {
+        return comptime self.supports(.on_conflict);
+    }
+
+    /// 检查是否支持 CTE (Common Table Expression) (编译时)
+    pub fn supportsCTE(comptime self: Dialect) bool {
+        return comptime self.supports(.cte);
+    }
+
+    /// 检查是否支持 JSONB 类型 (编译时)
+    pub fn supportsJSONB(comptime self: Dialect) bool {
+        return comptime self.supports(.jsonb);
+    }
+
+    /// 引用标识符 (编译时)
+    /// 返回被引号包裹的标识符字符串
+    pub fn quoteIdentifier(comptime self: Dialect, comptime identifier: []const u8) []const u8 {
+        const quotes = comptime self.identQuote();
+        return comptime std.fmt.comptimePrint("{c}{s}{c}", .{ quotes.left, identifier, quotes.right });
     }
 };
 
@@ -266,5 +225,103 @@ test "dialect upsert" {
 
         const mysql_upsert = Dialect.mysql.upsertClause();
         std.debug.assert(std.mem.eql(u8, mysql_upsert, "ON DUPLICATE KEY UPDATE"));
+    }
+}
+
+// ============================================
+// Story 007: 新增便捷 API 测试
+// ============================================
+
+test "supportsReturning convenience function" {
+    comptime {
+        // PostgreSQL 支持 RETURNING
+        std.debug.assert(Dialect.postgresql.supportsReturning());
+
+        // MySQL 不支持 RETURNING
+        std.debug.assert(!Dialect.mysql.supportsReturning());
+
+        // SQLite 支持 RETURNING
+        std.debug.assert(Dialect.sqlite.supportsReturning());
+    }
+}
+
+test "supportsOnConflict convenience function" {
+    comptime {
+        // PostgreSQL 支持 ON CONFLICT
+        std.debug.assert(Dialect.postgresql.supportsOnConflict());
+
+        // MySQL 不支持 ON CONFLICT
+        std.debug.assert(!Dialect.mysql.supportsOnConflict());
+
+        // SQLite 支持 ON CONFLICT
+        std.debug.assert(Dialect.sqlite.supportsOnConflict());
+    }
+}
+
+test "supportsCTE convenience function" {
+    comptime {
+        // 所有数据库都支持 CTE
+        std.debug.assert(Dialect.postgresql.supportsCTE());
+        std.debug.assert(Dialect.mysql.supportsCTE());
+        std.debug.assert(Dialect.sqlite.supportsCTE());
+    }
+}
+
+test "supportsJSONB convenience function" {
+    comptime {
+        // 所有主流数据库都支持 JSON/JSONB
+        std.debug.assert(Dialect.postgresql.supportsJSONB());
+        std.debug.assert(Dialect.mysql.supportsJSONB());
+        std.debug.assert(Dialect.sqlite.supportsJSONB());
+    }
+}
+
+test "quoteIdentifier function" {
+    comptime {
+        // PostgreSQL: "users"
+        const pg_quoted = Dialect.postgresql.quoteIdentifier("users");
+        std.debug.assert(std.mem.eql(u8, pg_quoted, "\"users\""));
+
+        // MySQL: `users`
+        const mysql_quoted = Dialect.mysql.quoteIdentifier("users");
+        std.debug.assert(std.mem.eql(u8, mysql_quoted, "`users`"));
+
+        // SQLite: "users"
+        const sqlite_quoted = Dialect.sqlite.quoteIdentifier("users");
+        std.debug.assert(std.mem.eql(u8, sqlite_quoted, "\"users\""));
+    }
+}
+
+test "all dialect placeholders" {
+    comptime {
+        // PostgreSQL: $1, $2, $3
+        std.debug.assert(std.mem.eql(u8, Dialect.postgresql.placeholder(1), "$1"));
+        std.debug.assert(std.mem.eql(u8, Dialect.postgresql.placeholder(2), "$2"));
+
+        // MySQL: ?, ?, ?
+        std.debug.assert(std.mem.eql(u8, Dialect.mysql.placeholder(1), "?"));
+        std.debug.assert(std.mem.eql(u8, Dialect.mysql.placeholder(2), "?"));
+
+        // SQLite: ?, ?, ?
+        std.debug.assert(std.mem.eql(u8, Dialect.sqlite.placeholder(1), "?"));
+    }
+}
+
+test "comptime evaluation - zero runtime cost" {
+    // 编译时验证：所有方言函数都必须在编译时求值
+    comptime {
+        // 特性检测必须在编译时完成
+        const pg_returning = Dialect.postgresql.supportsReturning();
+        _ = pg_returning;
+
+        // 占位符生成必须在编译时完成
+        const pg_ph = Dialect.postgresql.placeholder(1);
+        _ = pg_ph;
+
+        // 标识符引用必须在编译时完成
+        const pg_quoted = Dialect.postgresql.quoteIdentifier("table_name");
+        _ = pg_quoted;
+
+        // 如果这些不是 comptime，编译会失败
     }
 }

@@ -12,7 +12,7 @@
 - **🔒 类型安全** - 强类型查询构建器，编译时检查 SQL 正确性
 - **💾 显式内存管理** - Allocator 模式，完全控制内存分配，无 GC
 - **🎯 SQL-First** - 直接生成优化的 SQL，完全控制查询
-- **🌍 多数据库支持** - PostgreSQL, MySQL, SQLite, MSSQL, Oracle
+- **🌍 多数据库支持** - PostgreSQL, MySQL, SQLite
 - **⚡ 高性能** - 接近原生 C 性能，零动态分派
 - **🛠️ 强制错误处理** - Error union 类型，所有错误必须处理
 

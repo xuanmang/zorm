@@ -1,17 +1,21 @@
 //! DB - 数据库实例和连接管理
 //!
-//! DB 是 ZORM 的核心结构,负责:
+//! DB 是 ZORM 的核心泛型结构,负责:
 //! - 数据库连接管理
 //! - 查询构建器工厂方法
 //! - 事务管理
 //! - 查询钩子管理
 //! - 连接池统计
+//!
+//! ## 设计原则
+//! - 使用 comptime 参数化方言,实现零运行时开销
+//! - 显式 Allocator 管理,遵循 Zig 内存管理最佳实践
+//! - 强制错误处理,所有可能失败的操作返回 !T
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const dialect = @import("../dialect/dialect.zig");
-const Dialect = dialect.Dialect;
-const hooks = @import("../hooks/hooks.zig");
+const dialect_mod = @import("../dialect/dialect.zig");
+const Dialect = dialect_mod.Dialect;
 
 /// DB 配置选项
 pub const DBOptions = struct {
@@ -30,41 +34,62 @@ pub const DBOptions = struct {
     /// 连接最大空闲时间(秒)
     conn_max_idle_time: u64 = 60,
 
+    /// 查询超时 (毫秒)
+    query_timeout: u64 = 30_000,
+
     /// 启用查询日志
     enable_query_log: bool = false,
 
-    /// 启用查询计时
-    enable_query_timing: bool = false,
+    /// 启用慢查询日志
+    enable_slow_query_log: bool = false,
+
+    /// 慢查询阈值 (毫秒)
+    slow_query_threshold: u64 = 1000,
 };
 
 /// 连接统计信息
+/// 使用原子操作确保线程安全
 pub const DBStats = struct {
-    /// 已执行的查询数
-    queries: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// 总查询数
+    total_queries: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
-    /// 错误数
-    errors: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// 总错误数
+    total_errors: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 
     /// 当前打开的连接数
     open_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
-    /// 空闲连接数
+    /// 当前空闲的连接数
     idle_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
+    /// 记录一次查询
     pub fn recordQuery(self: *DBStats) void {
-        _ = self.queries.fetchAdd(1, .monotonic);
+        _ = self.total_queries.fetchAdd(1, .monotonic);
     }
 
+    /// 记录一次错误
     pub fn recordError(self: *DBStats) void {
-        _ = self.errors.fetchAdd(1, .monotonic);
+        _ = self.total_errors.fetchAdd(1, .monotonic);
     }
 
+    /// 获取查询总数
     pub fn getQueryCount(self: *const DBStats) u64 {
-        return self.queries.load(.monotonic);
+        return self.total_queries.load(.monotonic);
     }
 
+    /// 获取错误总数
     pub fn getErrorCount(self: *const DBStats) u64 {
-        return self.errors.load(.monotonic);
+        return self.total_errors.load(.monotonic);
+    }
+
+    /// 获取打开的连接数
+    pub fn getOpenConnections(self: *const DBStats) u32 {
+        return self.open_connections.load(.monotonic);
+    }
+
+    /// 获取空闲连接数
+    pub fn getIdleConnections(self: *const DBStats) u32 {
+        return self.idle_connections.load(.monotonic);
     }
 };
 
@@ -151,150 +176,343 @@ pub const Tx = struct {
     }
 };
 
-/// DB - 数据库实例
-pub const DB = struct {
-    allocator: Allocator,
-    conn: Conn,
-    dialect_type: Dialect,
-    options: DBOptions,
-    query_hooks: std.ArrayList(*hooks.QueryHook),
-    stats: DBStats,
-    current_tx: ?*Tx,
+/// DB - 泛型数据库实例
+///
+/// 使用 comptime 参数化方言,实现零运行时开销的多数据库支持
+///
+/// ## 示例
+/// ```zig
+/// const PostgresDB = DB(.postgresql);
+/// const db = try PostgresDB.init(allocator, conn, .{});
+/// defer db.deinit();
+///
+/// var query = try db.newSelect(User);
+/// defer query.deinit();
+/// ```
+pub fn DB(comptime dialect: Dialect) type {
+    // 前向声明查询构建器类型(将在 query.zig 中定义)
+    const query_mod = @import("../query/query.zig");
+    const SelectQuery = query_mod.SelectQuery;
+    const InsertQuery = query_mod.InsertQuery;
+    const UpdateQuery = query_mod.UpdateQuery;
+    const DeleteQuery = query_mod.DeleteQuery;
 
-    /// 创建数据库实例
-    pub fn init(
+    return struct {
+        const Self = @This();
+
         allocator: Allocator,
         conn: Conn,
-        dialect_type: Dialect,
         options: DBOptions,
-    ) !*DB {
-        const self = try allocator.create(DB);
-        errdefer allocator.destroy(self);
+        stats: DBStats,
+        current_tx: ?*Tx,
 
-        self.* = .{
-            .allocator = allocator,
-            .conn = conn,
-            .dialect_type = dialect_type,
-            .options = options,
-            .query_hooks = std.ArrayList(*hooks.QueryHook).init(allocator),
-            .stats = .{},
-            .current_tx = null,
-        };
+        /// 创建数据库实例
+        ///
+        /// ## 参数
+        /// - allocator: 内存分配器
+        /// - conn: 数据库连接
+        /// - options: 数据库配置选项
+        ///
+        /// ## 返回
+        /// 返回新创建的 DB 实例指针,失败时返回错误
+        pub fn init(
+            allocator: Allocator,
+            conn: Conn,
+            options: DBOptions,
+        ) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
 
-        return self;
-    }
+            self.* = .{
+                .allocator = allocator,
+                .conn = conn,
+                .options = options,
+                .stats = .{},
+                .current_tx = null,
+            };
 
-    /// 销毁数据库实例
-    pub fn deinit(self: *DB) void {
-        // 如果有活动事务,回滚它
-        if (self.current_tx) |tx| {
-            tx.rollback() catch {};
+            return self;
         }
 
-        // 清理查询钩子
-        self.query_hooks.deinit();
+        /// 销毁数据库实例
+        ///
+        /// 自动清理所有资源:
+        /// - 回滚活动事务(如果有)
+        /// - 关闭数据库连接
+        /// - 释放分配的内存
+        pub fn deinit(self: *Self) void {
+            // 如果有活动事务,回滚它
+            if (self.current_tx) |tx| {
+                tx.rollback() catch {};
+                self.current_tx = null;
+            }
 
-        // 关闭连接
-        self.conn.close();
+            // 关闭连接
+            self.conn.close();
 
-        // 释放内存
-        self.allocator.destroy(self);
-    }
-
-    /// 添加查询钩子
-    pub fn addQueryHook(self: *DB, hook: *hooks.QueryHook) !void {
-        try self.query_hooks.append(hook);
-    }
-
-    /// 执行 SQL 语句(不返回结果)
-    pub fn exec(self: *DB, query_str: []const u8, args: []const []const u8) !void {
-        self.stats.recordQuery();
-
-        // 如果有活动事务,使用事务执行
-        if (self.current_tx) |tx| {
-            return tx.exec(query_str, args);
+            // 释放内存
+            self.allocator.destroy(self);
         }
 
-        // 否则使用连接执行
-        return self.conn.exec(query_str, args) catch |err| {
-            self.stats.recordError();
-            return err;
-        };
-    }
-
-    /// 执行查询(返回结果)
-    pub fn query(self: *DB, query_str: []const u8, args: []const []const u8) !*Result {
-        self.stats.recordQuery();
-
-        // 如果有活动事务,使用事务执行
-        if (self.current_tx) |tx| {
-            return tx.query(query_str, args);
+        /// 获取编译时确定的方言类型
+        ///
+        /// 这个方法是编译时已知的,调用它不会产生任何运行时开销
+        pub fn getDialect() Dialect {
+            return dialect;
         }
 
-        // 否则使用连接执行
-        return self.conn.query(query_str, args) catch |err| {
-            self.stats.recordError();
-            return err;
-        };
-    }
-
-    /// 开始事务
-    pub fn begin(self: *DB) !*Tx {
-        if (self.current_tx != null) {
-            return error.TransactionAlreadyStarted;
+        /// 获取统计信息的副本
+        pub fn getStats(self: *const Self) DBStats {
+            return self.stats;
         }
 
-        const tx = try self.conn.begin();
-        self.current_tx = tx;
-        return tx;
-    }
+        /// 执行 SQL 语句(不返回结果)
+        ///
+        /// ## 参数
+        /// - query_str: SQL 查询字符串
+        /// - args: 查询参数
+        ///
+        /// ## 错误
+        /// 如果查询执行失败,返回相应的错误
+        pub fn exec(self: *Self, query_str: []const u8, args: []const []const u8) !void {
+            self.stats.recordQuery();
 
-    /// 提交事务
-    pub fn commit(self: *DB) !void {
-        const tx = self.current_tx orelse return error.NoActiveTransaction;
-        defer self.current_tx = null;
-        return tx.commit();
-    }
+            // 如果有活动事务,使用事务执行
+            if (self.current_tx) |tx| {
+                return tx.exec(query_str, args);
+            }
 
-    /// 回滚事务
-    pub fn rollback(self: *DB) !void {
-        const tx = self.current_tx orelse return error.NoActiveTransaction;
-        defer self.current_tx = null;
-        return tx.rollback();
-    }
+            // 否则使用连接执行
+            return self.conn.exec(query_str, args) catch |err| {
+                self.stats.recordError();
+                return err;
+            };
+        }
 
-    /// 获取方言类型
-    pub fn getDialect(self: *const DB) Dialect {
-        return self.dialect_type;
-    }
+        /// 执行查询(返回结果)
+        ///
+        /// ## 参数
+        /// - query_str: SQL 查询字符串
+        /// - args: 查询参数
+        ///
+        /// ## 返回
+        /// 返回查询结果集,调用者负责调用 result.close() 释放资源
+        pub fn query(self: *Self, query_str: []const u8, args: []const []const u8) !*Result {
+            self.stats.recordQuery();
 
-    /// 获取统计信息
-    pub fn getStats(self: *const DB) DBStats {
-        return self.stats;
-    }
+            // 如果有活动事务,使用事务执行
+            if (self.current_tx) |tx| {
+                return tx.query(query_str, args);
+            }
 
-    /// 在事务中执行函数
-    /// 如果函数返回错误,自动回滚;否则自动提交
-    pub fn runInTx(self: *DB, comptime func: anytype, args: anytype) !@TypeOf(@call(.auto, func, args)) {
-        _ = try self.begin();
-        errdefer self.rollback() catch {};
+            // 否则使用连接执行
+            return self.conn.query(query_str, args) catch |err| {
+                self.stats.recordError();
+                return err;
+            };
+        }
 
-        const result = try @call(.auto, func, args);
-        try self.commit();
-        return result;
-    }
-};
+        /// 开始事务
+        ///
+        /// ## 错误
+        /// - TransactionAlreadyStarted: 已有活动事务
+        pub fn begin(self: *Self) !*Tx {
+            if (self.current_tx != null) {
+                return error.TransactionAlreadyStarted;
+            }
 
-test "DB stats" {
+            const tx = try self.conn.begin();
+            self.current_tx = tx;
+            return tx;
+        }
+
+        /// 提交事务
+        ///
+        /// ## 错误
+        /// - NoActiveTransaction: 没有活动事务
+        pub fn commit(self: *Self) !void {
+            const tx = self.current_tx orelse return error.NoActiveTransaction;
+            defer self.current_tx = null;
+            return tx.commit();
+        }
+
+        /// 回滚事务
+        ///
+        /// ## 错误
+        /// - NoActiveTransaction: 没有活动事务
+        pub fn rollback(self: *Self) !void {
+            const tx = self.current_tx orelse return error.NoActiveTransaction;
+            defer self.current_tx = null;
+            return tx.rollback();
+        }
+
+        /// 在事务中执行函数
+        ///
+        /// 如果函数返回错误,自动回滚;否则自动提交
+        ///
+        /// ## 参数
+        /// - func: 要执行的函数
+        /// - args: 函数参数
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try db.runInTx(struct {
+        ///     fn execute(d: *DB(.postgresql)) !void {
+        ///         try d.exec("INSERT INTO users (name) VALUES ($1)", .{"Alice"});
+        ///     }
+        /// }.execute, .{db});
+        /// ```
+        pub fn runInTx(self: *Self, comptime func: anytype, args: anytype) !@TypeOf(@call(.auto, func, args)) {
+            _ = try self.begin();
+            errdefer self.rollback() catch {};
+
+            const result = try @call(.auto, func, args);
+            try self.commit();
+            return result;
+        }
+
+        // ============================================
+        // 查询构建器工厂方法
+        // ============================================
+
+        /// 创建 SELECT 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型
+        /// - table_name: 表名 (如果模型定义了 table_name 常量,可以不传)
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     name: []const u8,
+        ///     pub const table_name = "users";
+        /// };
+        ///
+        /// var query = try db.newSelect(User);
+        /// defer query.deinit();
+        /// ```
+        pub fn newSelect(self: *Self, comptime T: type) !*SelectQuery(T, dialect) {
+            const table_name = comptime blk: {
+                if (@hasDecl(T, "table_name")) {
+                    break :blk T.table_name;
+                } else {
+                    break :blk @typeName(T);
+                }
+            };
+
+            return SelectQuery(T, dialect).init(self.allocator, self, table_name);
+        }
+
+        /// 创建 INSERT 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newInsert(User);
+        /// defer query.deinit();
+        /// ```
+        pub fn newInsert(self: *Self, comptime T: type) !*InsertQuery(T, dialect) {
+            const table_name = comptime blk: {
+                if (@hasDecl(T, "table_name")) {
+                    break :blk T.table_name;
+                } else {
+                    break :blk @typeName(T);
+                }
+            };
+
+            return InsertQuery(T, dialect).init(self.allocator, self, table_name);
+        }
+
+        /// 创建 UPDATE 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newUpdate(User);
+        /// defer query.deinit();
+        /// ```
+        pub fn newUpdate(self: *Self, comptime T: type) !*UpdateQuery(T, dialect) {
+            const table_name = comptime blk: {
+                if (@hasDecl(T, "table_name")) {
+                    break :blk T.table_name;
+                } else {
+                    break :blk @typeName(T);
+                }
+            };
+
+            return UpdateQuery(T, dialect).init(self.allocator, self, table_name);
+        }
+
+        /// 创建 DELETE 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newDelete(User);
+        /// defer query.deinit();
+        /// ```
+        pub fn newDelete(self: *Self, comptime T: type) !*DeleteQuery(T, dialect) {
+            const table_name = comptime blk: {
+                if (@hasDecl(T, "table_name")) {
+                    break :blk T.table_name;
+                } else {
+                    break :blk @typeName(T);
+                }
+            };
+
+            return DeleteQuery(T, dialect).init(self.allocator, self, table_name);
+        }
+    };
+}
+
+// ============================================
+// 单元测试
+// ============================================
+
+test "DBStats 基本操作" {
     var stats = DBStats{};
 
-    try std.testing.expectEqual(0, stats.getQueryCount());
-    try std.testing.expectEqual(0, stats.getErrorCount());
+    try std.testing.expectEqual(@as(u64, 0), stats.getQueryCount());
+    try std.testing.expectEqual(@as(u64, 0), stats.getErrorCount());
 
     stats.recordQuery();
     stats.recordQuery();
     stats.recordError();
 
-    try std.testing.expectEqual(2, stats.getQueryCount());
-    try std.testing.expectEqual(1, stats.getErrorCount());
+    try std.testing.expectEqual(@as(u64, 2), stats.getQueryCount());
+    try std.testing.expectEqual(@as(u64, 1), stats.getErrorCount());
+}
+
+test "DB 泛型实例化" {
+    // 验证可以为不同方言创建 DB 类型
+    const PostgresDB = DB(.postgresql);
+    const MySQLDB = DB(.mysql);
+    const SQLiteDB = DB(.sqlite);
+
+    // 验证它们是不同的类型
+    try std.testing.expect(PostgresDB != MySQLDB);
+    try std.testing.expect(PostgresDB != SQLiteDB);
+    try std.testing.expect(MySQLDB != SQLiteDB);
+
+    // 验证 getDialect 编译时求值
+    try std.testing.expectEqual(Dialect.postgresql, PostgresDB.getDialect());
+    try std.testing.expectEqual(Dialect.mysql, MySQLDB.getDialect());
+    try std.testing.expectEqual(Dialect.sqlite, SQLiteDB.getDialect());
+}
+
+test "DBOptions 默认值" {
+    const opts = DBOptions{};
+
+    try std.testing.expectEqual(false, opts.discard_unknown_columns);
+    try std.testing.expectEqual(@as(u32, 25), opts.max_open_conns);
+    try std.testing.expectEqual(@as(u32, 25), opts.max_idle_conns);
+    try std.testing.expectEqual(@as(u64, 300), opts.conn_max_lifetime);
+    try std.testing.expectEqual(@as(u64, 30_000), opts.query_timeout);
 }

@@ -1,7 +1,7 @@
 # Story 019: 实现结果扫描器
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -18,6 +18,12 @@ Draft
 - [ ] 创建 src/mapper/result_scanner.zig
 - [ ] 实现扫描逻辑
 - [ ] 编写测试
+
+## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
+
 
 ## Change Log
 | Date | Version | Description | Author |

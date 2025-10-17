@@ -1,7 +1,7 @@
 # Story 005: 实现 PostgreSQL 驱动
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -53,6 +53,9 @@ Draft
   - [ ] 测试错误处理
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 
 ### 架构参考
 - **文档位置**: [docs/architecture.md#ConnectionManager](architecture.md#核心模块详细设计) (行 259-366)

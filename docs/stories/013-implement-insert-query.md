@@ -1,7 +1,7 @@
 # Story 013: 实现 INSERT 查询构建器
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -25,6 +25,9 @@ Draft
 - [ ] 编写测试
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 参考 [docs/architecture.md#InsertQuery](architecture.md) (行 1661-1721)
 
 ## Change Log

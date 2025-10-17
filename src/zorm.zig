@@ -43,12 +43,24 @@ pub const dialect = @import("dialect/dialect.zig");
 pub const query = @import("query/query.zig");
 pub const schema = @import("schema/schema.zig");
 pub const hooks = @import("hooks/hooks.zig");
+pub const driver = struct {
+    pub const postgres = @import("driver/postgres.zig");
+    pub const connection = @import("driver/connection.zig");
+};
+
+// 导出常用驱动类型
+pub const PostgresDriver = driver.postgres.PostgresDriver;
+pub const Connection = driver.connection.Connection;
+pub const Result = driver.connection.Result;
+pub const Rows = driver.connection.Rows;
+pub const Row = driver.connection.Row;
 
 // 导出常用类型
 pub const DB = core.DB;
 pub const DBOptions = core.DBOptions;
 pub const Dialect = dialect.Dialect;
 pub const Feature = dialect.Feature;
+pub const QueryArg = @import("types.zig").QueryArg;
 
 // 导出查询构建器
 pub const SelectQuery = query.SelectQuery;

@@ -1,7 +1,7 @@
 # Story 022: 实现 Migration 系统
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -20,6 +20,12 @@ Draft
 - [ ] 实现 Migration 结构体
 - [ ] 实现迁移执行逻辑
 - [ ] 编写测试
+
+## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
+
 
 ## Change Log
 | Date | Version | Description | Author |

@@ -1,7 +1,7 @@
 # Story 006: 实现连接池管理
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -41,6 +41,9 @@ Draft
   - [ ] 测试连接超时和清理
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 
 ### 架构参考
 - [docs/architecture.md#ConnectionManager](architecture.md#核心模块详细设计) (行 294-366)

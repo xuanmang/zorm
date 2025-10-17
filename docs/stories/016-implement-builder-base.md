@@ -1,7 +1,7 @@
 # Story 016: 实现查询构建器基础功能
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -18,6 +18,12 @@ Draft
 - [ ] 创建 src/query/builder_base.zig
 - [ ] 实现共享逻辑
 - [ ] 重构现有查询构建器使用共享逻辑
+
+## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
+
 
 ## Change Log
 | Date | Version | Description | Author |

@@ -1,7 +1,7 @@
 # Story 021: 实现 Index 管理
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -20,6 +20,12 @@ Draft
 - [ ] 实现 Index 结构体
 - [ ] 实现 CREATE INDEX 生成
 - [ ] 编写测试
+
+## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
+
 
 ## Change Log
 | Date | Version | Description | Author |

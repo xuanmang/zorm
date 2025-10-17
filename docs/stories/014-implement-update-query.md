@@ -1,7 +1,7 @@
 # Story 014: 实现 UPDATE 查询构建器
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -19,6 +19,12 @@ Draft
 - [ ] 创建 src/query/update.zig
 - [ ] 实现 UPDATE 逻辑
 - [ ] 编写测试
+
+## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
+
 
 ## Change Log
 | Date | Version | Description | Author |

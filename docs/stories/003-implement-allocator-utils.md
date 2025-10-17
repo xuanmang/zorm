@@ -1,7 +1,7 @@
 # Story 003: 实现 Allocator 工具函数
 
 ## Status
-Draft
+Ready for Review
 
 ## Story
 **As a** ZORM 开发者,
@@ -17,26 +17,29 @@ Draft
 6. 编写完整的单元测试，包括内存泄漏检测
 
 ## Tasks / Subtasks
-- [ ] 创建 src/allocator.zig 文件 (AC: 1, 5)
-  - [ ] 实现 dupeString() 函数 (字符串复制)
-  - [ ] 实现 dupeSlice() 泛型函数 (切片复制)
-  - [ ] 实现 allocArgs() 函数 (从 tuple 分配 QueryArg 数组)
-  - [ ] 实现 freeArgs() 函数 (释放 QueryArg 数组内存)
-- [ ] 添加内存清理辅助函数 (AC: 4)
-  - [ ] 实现 freeStringSlice() (释放字符串切片)
-  - [ ] 实现 freeSlice() 泛型函数
-- [ ] 编写文档注释 (AC: 1-5)
-  - [ ] 为每个函数添加清晰的文档
-  - [ ] 说明内存所有权和生命周期
-  - [ ] 提供使用示例
-- [ ] 编写单元测试 (AC: 6)
-  - [ ] 测试字符串复制功能
-  - [ ] 测试切片复制功能
-  - [ ] 测试参数分配和释放
-  - [ ] 使用 std.testing.allocator 检测内存泄漏
-  - [ ] 验证错误处理 (OutOfMemory)
+- [x] 创建 src/allocator.zig 文件 (AC: 1, 5)
+  - [x] 实现 dupeString() 函数 (字符串复制)
+  - [x] 实现 dupeSlice() 泛型函数 (切片复制)
+  - [x] 实现 allocArgs() 函数 (从 tuple 分配 QueryArg 数组)
+  - [x] 实现 freeArgs() 函数 (释放 QueryArg 数组内存)
+- [x] 添加内存清理辅助函数 (AC: 4)
+  - [x] 实现 freeStringSlice() (释放字符串切片)
+  - [x] 实现 freeSlice() 泛型函数
+- [x] 编写文档注释 (AC: 1-5)
+  - [x] 为每个函数添加清晰的文档
+  - [x] 说明内存所有权和生命周期
+  - [x] 提供使用示例
+- [x] 编写单元测试 (AC: 6)
+  - [x] 测试字符串复制功能
+  - [x] 测试切片复制功能
+  - [x] 测试参数分配和释放
+  - [x] 使用 std.testing.allocator 检测内存泄漏
+  - [x] 验证错误处理 (OutOfMemory)
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 
 ### 架构参考
 - **文档位置**: [docs/architecture.md#内存管理策略](architecture.md#内存管理策略) (行 1132-1249)
@@ -267,21 +270,175 @@ test "allocArgs converts tuple to QueryArg array" {
 | Date | Version | Description | Author |
 |------|---------|-------------|--------|
 | 2025-01-16 | 1.0 | 创建 Story | Bob (Scrum Master) |
+| 2025-01-17 | 2.0 | 实现完成 - 创建 src/allocator.zig,实现 6 个工具函数,13 个单元测试全部通过,无内存泄漏 | James (Developer Agent) |
 
 ## Dev Agent Record
-_此部分将由开发 Agent 在实现过程中填写_
 
 ### Agent Model Used
-_待填写_
+- Primary: Claude Sonnet 4.5 (claude-sonnet-4-5-20250929)
+- Role: Full Stack Developer (James)
 
 ### Debug Log References
-_待填写_
+- 解决 Zig 0.15.2 编译问题:
+  - 移除 freeSlice() 中不必要的 `_ = T` (pointless discard)
+  - T 已在函数签名 slice: []T 中使用，无需额外 discard
 
 ### Completion Notes
-_待填写_
+- ✅ 成功实现完整的 ZORM Allocator 工具函数系统
+- ✅ 实现 6 个核心工具函数:
+  1. **dupeString()** - 字符串复制，分配新内存
+  2. **dupeSlice()** - 泛型切片复制，支持任意类型
+  3. **allocArgs()** - 从 tuple 分配 QueryArg 数组，编译时类型转换
+  4. **freeArgs()** - 释放 QueryArg 数组
+  5. **freeStringSlice()** - 释放字符串切片数组及其内容
+  6. **freeSlice()** - 泛型切片释放
+- ✅ 所有函数都遵循 Zig Allocator 模式:
+  - 接受 Allocator 参数
+  - 返回 Error!T 或 void
+  - 清晰的内存所有权语义
+- ✅ 完整的文档注释:
+  - 每个函数都有详细说明
+  - 明确内存所有权和生命周期
+  - 提供使用示例和代码片段
+  - 错误处理说明
+- ✅ 实现 13 个单元测试,全部通过:
+  1. dupeString allocates and copies correctly
+  2. dupeString handles empty string
+  3. dupeSlice allocates and copies integer slice
+  4. dupeSlice handles empty slice
+  5. dupeSlice works with different types
+  6. allocArgs converts tuple to QueryArg array
+  7. allocArgs handles empty tuple
+  8. allocArgs handles various types
+  9. freeStringSlice releases all memory
+  10. freeSlice releases memory
+  11. memory leak detection works
+  12. errdefer in allocArgs prevents leak on failure
+  13. arena allocator integration
+- ✅ 内存泄漏检测:
+  - 所有测试使用 std.testing.allocator
+  - 自动检测内存泄漏
+  - 验证 defer/errdefer 正确工作
+  - 测试 Arena Allocator 集成
+- ✅ 错误处理:
+  - 所有分配函数返回 Error.OutOfMemory
+  - errdefer 确保分配失败时清理
+- ✅ 代码符合 Zig 0.15.2+ 规范
+- ✅ 通过 zig fmt 格式检查
+- ✅ 项目构建成功
+
+**实现亮点**:
+- 完整的 Allocator 模式实现，符合 Zig 最佳实践
+- allocArgs() 使用 comptime 泛型，支持任意 tuple
+- 自动内存泄漏检测，确保内存安全
+- 支持 Arena Allocator，简化批量内存管理
+- errdefer 确保异常安全
+- 清晰的内存所有权文档
+
+**技术决策**:
+- 所有 dupe* 函数封装 allocator.dupe()，统一错误处理
+- allocArgs() 使用 inline for 编译时展开，零运行时开销
+- 不复制 QueryArg 中的字符串值，调用者管理生命周期
+- freeStringSlice() 假设字符串由同一 allocator 分配
+- 泛型函数支持任意类型，最大化代码复用
+
+**Arena Allocator 集成**:
+- 测试验证 Arena Allocator 正常工作
+- 适用场景: 批量分配临时对象
+- 优势: 一次性释放所有内存，简化管理
 
 ### File List
-_待填写_
+#### 新增文件:
+- `src/allocator.zig` - ZORM Allocator 工具函数 (329 行)
+
+#### 修改文件:
+无
 
 ## QA Results
-_此部分将由 QA Agent 在审查后填写_
+
+### Review Date: 2025-10-17
+
+### Reviewed By: Quinn (Test Architect)
+
+### Code Quality Assessment
+
+**Overall Score: 97/100 - 优秀** ✅
+
+实现质量非常高,完全满足所有验收标准:
+- ✅ 实现 dupeString() 字符串复制工具,分配新内存
+- ✅ 实现 dupeSlice() 泛型切片复制,支持任意类型
+- ✅ 实现 allocArgs() 从 tuple 分配 QueryArg 数组,comptime 类型转换
+- ✅ 实现 freeArgs/freeStringSlice/freeSlice 内存清理函数
+- ✅ 所有函数遵循 Zig Allocator 模式,接受 Allocator 参数
+- ✅ 13 个单元测试,全部通过,使用 std.testing.allocator 自动检测内存泄漏
+
+**技术亮点**:
+1. 内存管理规范,所有函数遵循 Zig Allocator 模式,清晰的所有权语义
+2. 错误处理完善,使用 errdefer 确保异常安全
+3. allocArgs() 使用 comptime 检查和 inline for 编译时展开,零运行时开销
+4. 泛型设计优秀,dupeSlice/freeSlice 支持任意类型,最大化代码复用
+5. 完整的内存泄漏检测,所有测试使用 std.testing.allocator
+6. Arena Allocator 集成测试,验证批量内存管理场景
+
+### Refactoring Performed
+
+无需重构 - 代码质量已经很高 ✅
+
+### Compliance Check
+
+- Coding Standards: ✅ 符合 Zig 编码标准
+- Project Structure: ✅ 文件位置正确 (src/allocator.zig, Foundation Layer)
+- Testing Strategy: ✅ 13 个单元测试,覆盖全面,包含泄漏检测
+- All ACs Met: ✅ 6/6 验收标准全部满足
+
+### Improvements Checklist
+
+**全部完成,无待办项** ✅
+
+Future improvements (非阻塞,可选):
+- [ ] 考虑在注释中明确说明为何使用 .@"struct" 转义关键字 (行 89)
+
+### Security Review
+
+✅ **PASS** - 无安全问题
+- 所有函数清晰说明内存所有权,避免双重释放
+- errdefer 确保异常安全,分配失败时自动清理
+- 文档明确警告不要释放字面量或外部拥有的内存
+- allocArgs 不复制字符串值,避免生命周期混淆
+
+### Performance Considerations
+
+✅ **PASS** - 性能优秀
+- 工具函数为轻量级封装,最小化开销
+- allocArgs 使用 inline for 编译时展开,零运行时开销
+- comptime 类型检查,无运行时类型判断
+- 直接封装 allocator.dupe/alloc/free,无额外抽象层
+
+### Files Modified During Review
+
+无 - 代码质量已达标,无需修改
+
+### Gate Status
+
+Gate: **PASS** → docs/qa/gates/003-implement-allocator-utils.yml
+Quality Score: **97/100**
+All NFRs: **PASS**
+
+### Requirements Traceability
+
+| AC | 需求 | 测试覆盖 | 状态 |
+|----|------|---------|------|
+| AC1 | 提供字符串复制工具 (dupeString) | test "dupeString *" (2个) | ✅ |
+| AC2 | 提供切片复制工具 (dupeSlice) | test "dupeSlice *" (3个) | ✅ |
+| AC3 | 提供参数数组分配函数 (allocArgs) | test "allocArgs *" (3个) | ✅ |
+| AC4 | 提供内存清理辅助函数 | test "free* *" (2个) | ✅ |
+| AC5 | 所有函数接受 Allocator 参数 | 所有测试验证 | ✅ |
+| AC6 | 完整单元测试+内存泄漏检测 | 13个测试+std.testing.allocator | ✅ |
+
+**Coverage: 6/6 (100%)** ✅
+
+### Recommended Status
+
+**✅ Ready for Done**
+
+Story 003 已完全满足所有验收标准,代码质量优秀,无阻塞问题。建议标记为 Done。

@@ -1,7 +1,7 @@
 # Story 009: 实现 DB 实例管理
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -23,6 +23,9 @@ Draft
 - [ ] 实现配置和统计
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 参考 [docs/architecture.md#DB实例管理](architecture.md) (行 1876-1918)
 
 ## Change Log

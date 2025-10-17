@@ -1,7 +1,7 @@
 # Story 007: 实现方言系统和特性检测
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -29,6 +29,9 @@ Draft
 - [ ] 编写文档说明方言差异
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 ### 架构参考
 - [docs/architecture.md#方言系统设计](architecture.md#方言系统设计) (行 1553-1754)
 

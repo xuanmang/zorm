@@ -1,7 +1,7 @@
 # Story 010: 实现事务管理
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -23,6 +23,9 @@ Draft
 - [ ] 编写事务测试
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 参考 [docs/architecture.md#TransactionManager](architecture.md) (行 790-917)
 
 ## Change Log

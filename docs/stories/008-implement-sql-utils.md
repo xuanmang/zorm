@@ -1,7 +1,7 @@
 # Story 008: 实现 SQL 生成工具
 
-## Status  
-Draft
+## Status
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -26,6 +26,9 @@ Draft
 - [ ] 编写使用文档和示例
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 ### 架构参考
 - [docs/architecture.md#方言系统设计](architecture.md#方言系统设计)
 

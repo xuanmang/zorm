@@ -1,7 +1,7 @@
 # Story 017: 实现编译时类型反射
 
 ## Status
-Draft
+Approved
 
 ## Story
 **As a** ZORM 开发者,
@@ -22,6 +22,9 @@ Draft
 - [ ] 编写测试
 
 ## Dev Notes
+
+### 系统架构文档
+- **完整架构文档**: @docs/architecture.md
 参考 [docs/architecture.md#类型反射](architecture.md) (行 657-683)
 
 ### 关键实现

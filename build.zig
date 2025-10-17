@@ -20,6 +20,12 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "enable_mysql", enable_mysql);
     options.addOption(bool, "enable_sqlite", enable_sqlite);
 
+    // 获取 pg.zig 依赖
+    const pg_dep = b.dependency("pg", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // 创建 ZORM 库模块
     const zorm_module = b.createModule(.{
         .root_source_file = b.path("src/zorm.zig"),
@@ -29,10 +35,8 @@ pub fn build(b: *std.Build) void {
 
     zorm_module.addOptions("build_options", options);
 
-    // 链接 C 库
-    if (enable_postgres or enable_mysql or enable_sqlite) {
-        zorm_module.link_libc = true;
-    }
+    // 添加 pg.zig 模块
+    zorm_module.addImport("pg", pg_dep.module("pg"));
 
     // 示例程序
     const example_module = b.createModule(.{
@@ -79,4 +83,36 @@ pub fn build(b: *std.Build) void {
 
     const fmt_step = b.step("fmt", "Format code");
     fmt_step.dependOn(&fmt.step);
+
+    // 单元测试配置
+    const unit_tests = b.addTest(.{
+        .root_module = zorm_module,
+    });
+
+    const run_unit_tests = b.addRunArtifact(unit_tests);
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_unit_tests.step);
+
+    // PostgreSQL 集成测试
+    if (enable_postgres) {
+        const postgres_test_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/postgres_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        postgres_test_module.addImport("zorm", zorm_module);
+
+        const postgres_tests = b.addTest(.{
+            .root_module = postgres_test_module,
+        });
+
+        const run_postgres_tests = b.addRunArtifact(postgres_tests);
+        const postgres_test_step = b.step("test-postgres", "Run PostgreSQL integration tests");
+        postgres_test_step.dependOn(&run_postgres_tests.step);
+
+        const all_tests_step = b.step("test-all", "Run all tests (unit + integration)");
+        all_tests_step.dependOn(&run_unit_tests.step);
+        all_tests_step.dependOn(&run_postgres_tests.step);
+    }
 }

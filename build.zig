@@ -114,5 +114,62 @@ pub fn build(b: *std.Build) void {
         const all_tests_step = b.step("test-all", "Run all tests (unit + integration)");
         all_tests_step.dependOn(&run_unit_tests.step);
         all_tests_step.dependOn(&run_postgres_tests.step);
+
+        // 简单 PostgreSQL 测试程序
+        const simple_pg_test_module = b.createModule(.{
+            .root_source_file = b.path("simple_pg_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        simple_pg_test_module.addImport("pg", pg_dep.module("pg"));
+
+        const simple_pg_test_exe = b.addExecutable(.{
+            .name = "simple_pg_test",
+            .root_module = simple_pg_test_module,
+        });
+
+        b.installArtifact(simple_pg_test_exe);
+
+        const run_simple_pg_test = b.addRunArtifact(simple_pg_test_exe);
+        const simple_pg_test_step = b.step("test-simple-pg", "Run simple PostgreSQL test");
+        simple_pg_test_step.dependOn(&run_simple_pg_test.step);
+
+        // 最小化集成测试
+        const minimal_test_module = b.createModule(.{
+            .root_source_file = b.path("minimal_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        minimal_test_module.addImport("zorm", zorm_module);
+
+        const minimal_tests = b.addTest(.{
+            .root_module = minimal_test_module,
+        });
+
+        const run_minimal_tests = b.addRunArtifact(minimal_tests);
+        const minimal_test_step = b.step("test-minimal", "Run minimal integration test");
+        minimal_test_step.dependOn(&run_minimal_tests.step);
+
+        // Stmt 参数绑定测试程序
+        const simple_test_module = b.createModule(.{
+            .root_source_file = b.path("simple_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        simple_test_module.addImport("pg", pg_dep.module("pg"));
+
+        const simple_test_exe = b.addExecutable(.{
+            .name = "simple_test",
+            .root_module = simple_test_module,
+        });
+
+        b.installArtifact(simple_test_exe);
+
+        const run_simple_test = b.addRunArtifact(simple_test_exe);
+        const simple_test_step = b.step("test-simple", "Run simple Stmt bind test");
+        simple_test_step.dependOn(&run_simple_test.step);
     }
 }

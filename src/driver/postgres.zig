@@ -30,13 +30,19 @@ const Error = connection.Error;
 pub const PostgresDriver = struct {
     pool: *pg.Pool,
     allocator: Allocator,
+    // 保存配置字符串，Pool 需要这些指针
+    config_host: ?[]const u8 = null,
+    config_username: ?[]const u8 = null,
+    config_password: ?[]const u8 = null,
+    config_database: ?[]const u8 = null,
 
     /// 连接到 PostgreSQL 数据库
     /// dsn 格式: "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres"
     pub fn connect(allocator: Allocator, dsn: []const u8) !PostgresDriver {
         // 解析 DSN 字符串
         const config = try parseDSN(allocator, dsn);
-        defer {
+        // 注意：不要在这里释放字符串! Pool 需要这些指针保持有效
+        errdefer {
             if (config.host) |h| allocator.free(h);
             if (config.username) |u| allocator.free(u);
             if (config.password) |p| allocator.free(p);
@@ -67,12 +73,22 @@ pub const PostgresDriver = struct {
         return PostgresDriver{
             .pool = pool,
             .allocator = allocator,
+            .config_host = config.host,
+            .config_username = config.username,
+            .config_password = config.password,
+            .config_database = config.database,
         };
     }
 
     /// 关闭数据库连接
     pub fn close(self: *PostgresDriver) !void {
         self.pool.deinit();
+
+        // 释放保存的配置字符串
+        if (self.config_host) |h| self.allocator.free(h);
+        if (self.config_username) |u| self.allocator.free(u);
+        if (self.config_password) |p| self.allocator.free(p);
+        if (self.config_database) |d| self.allocator.free(d);
     }
 
     /// 执行 SQL 语句 (INSERT, UPDATE, DELETE)
@@ -98,21 +114,18 @@ pub const PostgresDriver = struct {
         const conn = self.pool.acquire() catch {
             return Error.ConnectionFailed;
         };
+        // 手动管理连接释放
         defer self.pool.release(conn);
 
-        // 创建 statement
-        var stmt = pg.Stmt.init(conn, .{}) catch {
+        // 创建 statement (release_conn = false,手动管理连接)
+        var stmt = pg.Stmt.init(conn, .{ .release_conn = false }) catch {
             return Error.QueryFailed;
         };
-        defer stmt.deinit();
+        // 注意：只在错误情况下调用 deinit，成功时所有权转移给 result
+        errdefer stmt.deinit();
 
-        // Prepare SQL
+        // Prepare SQL (prepare() 内部已经调用了 prepareForBind())
         stmt.prepare(sql, null) catch {
-            return Error.QueryFailed;
-        };
-
-        // Prepare for binding
-        stmt.prepareForBind(@intCast(args.len)) catch {
             return Error.QueryFailed;
         };
 
@@ -129,7 +142,7 @@ pub const PostgresDriver = struct {
             }
         }
 
-        // Execute
+        // Execute (成功后所有权转移给 result)
         const result = stmt.execute() catch {
             return Error.QueryFailed;
         };
@@ -163,24 +176,18 @@ pub const PostgresDriver = struct {
             const conn = self.pool.acquire() catch {
                 return Error.ConnectionFailed;
             };
-            // 注意：不能 defer release，因为 result 需要保持连接
+            // 注意：只在错误时释放连接，成功时由 Result 负责释放
+            errdefer self.pool.release(conn);
 
-            // 创建 statement
-            var stmt = pg.Stmt.init(conn, .{}) catch {
-                self.pool.release(conn);
+            // 创建 statement，设置 release_conn = true 让 Result 负责释放连接
+            var stmt = pg.Stmt.init(conn, .{ .release_conn = true }) catch {
                 return Error.QueryFailed;
             };
-            defer stmt.deinit();
+            // 注意：只在错误情况下调用 deinit，成功时所有权转移给 result
+            errdefer stmt.deinit();
 
-            // Prepare SQL
+            // Prepare SQL (prepare() 内部已经调用了 prepareForBind())
             stmt.prepare(sql, null) catch {
-                self.pool.release(conn);
-                return Error.QueryFailed;
-            };
-
-            // Prepare for binding
-            stmt.prepareForBind(@intCast(args.len)) catch {
-                self.pool.release(conn);
                 return Error.QueryFailed;
             };
 
@@ -196,19 +203,16 @@ pub const PostgresDriver = struct {
                     .null_val => stmt.bind(@as(?i32, null)),
                 };
                 bind_result catch {
-                    self.pool.release(conn);
                     return Error.QueryFailed;
                 };
             }
 
-            // Execute
+            // Execute (成功后所有权转移给 result)
+            // Result 将负责释放连接（因为 release_conn = true）
             const r = stmt.execute() catch {
-                self.pool.release(conn);
                 return Error.QueryFailed;
             };
 
-            // 释放连接回池
-            self.pool.release(conn);
             break :blk r;
         };
 

@@ -1,7 +1,7 @@
 # Story 003: 实现 Allocator 工具函数
 
 ## Status
-Ready for Review
+Done
 
 ## Story
 **As a** ZORM 开发者,

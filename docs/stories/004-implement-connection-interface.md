@@ -1,7 +1,7 @@
 # Story 004: 实现 Connection 接口
 
 ## Status
-Ready for Review
+Done
 
 ## Story
 **As a** ZORM 开发者,

@@ -1,7 +1,7 @@
 # Story 005: 实现 PostgreSQL 驱动
 
 ## Status
-Approved
+Done
 
 ## Story
 **As a** ZORM 开发者,

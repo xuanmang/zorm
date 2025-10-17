@@ -1,7 +1,7 @@
 # Story 002: 实现基础类型定义
 
 ## Status
-Ready for Review
+Done
 
 ## Story
 **As a** ZORM 开发者,

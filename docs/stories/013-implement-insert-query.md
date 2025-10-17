@@ -1,7 +1,7 @@
 # Story 013: 实现 INSERT 查询构建器
 
 ## Status
-Ready for Review
+Done
 
 ## Story
 **As a** ZORM 开发者,

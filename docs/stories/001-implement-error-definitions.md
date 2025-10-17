@@ -1,7 +1,7 @@
 # Story 001: 实现错误定义系统
 
 ## Status
-Ready for Review
+Done
 
 ## Story
 **As a** ZORM 开发者,

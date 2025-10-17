@@ -14,10 +14,21 @@ pub const Dialect = enum {
     mysql,
     sqlite,
 
-    /// 获取占位符语法 (编译时)
+    /// 获取占位符语法 (运行时)
     /// PostgreSQL: $1, $2, ...
     /// MySQL/SQLite: ?, ?, ...
-    pub fn placeholder(comptime self: Dialect, index: usize) []const u8 {
+    ///
+    /// 注意: 对于 PostgreSQL,需要使用 allocPrint 分配内存,调用者负责释放
+    pub fn placeholderAlloc(comptime self: Dialect, allocator: std.mem.Allocator, index: usize) ![]const u8 {
+        return switch (self) {
+            .postgresql => try std.fmt.allocPrint(allocator, "${d}", .{index}),
+            .mysql, .sqlite => "?",
+        };
+    }
+
+    /// 获取占位符语法 (编译时 - 仅用于测试)
+    /// 注意: index 必须是 comptime 已知的值
+    pub fn placeholder(comptime self: Dialect, comptime index: usize) []const u8 {
         return comptime switch (self) {
             .postgresql => std.fmt.comptimePrint("${d}", .{index}),
             .mysql, .sqlite => "?",

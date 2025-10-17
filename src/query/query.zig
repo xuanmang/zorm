@@ -26,6 +26,9 @@ pub const OrderByClause = types.OrderByClause;
 pub const OrderDirection = types.OrderDirection;
 pub const HavingClause = types.HavingClause;
 pub const QueryArg = types.QueryArg;
+pub const ConflictAction = types.ConflictAction;
+pub const OnConflictClause = types.OnConflictClause;
+pub const OnDuplicateKeyUpdate = types.OnDuplicateKeyUpdate;
 
 /// SELECT 查询构建器
 ///
@@ -385,6 +388,20 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const QueryArg {
 /// ## 参数
 /// - T: 模型类型
 /// - dialect: 数据库方言 (编译时确定)
+///
+/// ## 示例
+/// ```zig
+/// var query = try db.newInsert(User);
+/// defer query.deinit();
+///
+/// // 单行插入
+/// try query.value(.{ .name = "Alice", .email = "alice@example.com" });
+///
+/// // PostgreSQL: 使用 RETURNING
+/// try query.returning(&.{"id", "created_at"});
+///
+/// const sql = try query.build();
+/// ```
 pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
     _ = T; // TODO: 使用类型参数进行反射
     const DBType = db_mod.DB(dialect);
@@ -395,22 +412,302 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         allocator: Allocator,
         db: *DBType,
         table_name: []const u8,
+        columns: std.ArrayList([]const u8),
+        values_list: std.ArrayList([]const QueryArg),
+        returning_columns: ?[]const []const u8,
+        on_conflict: ?OnConflictClause,
+        on_duplicate_key: ?OnDuplicateKeyUpdate,
 
+        /// 初始化插入查询构建器
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
             self.* = .{
                 .allocator = allocator,
                 .db = db,
                 .table_name = table_name,
+                .columns = .{},
+                .values_list = .{},
+                .returning_columns = null,
+                .on_conflict = null,
+                .on_duplicate_key = null,
             };
+
             return self;
         }
 
+        /// 释放资源
         pub fn deinit(self: *Self) void {
+            self.columns.deinit(self.allocator);
+
+            // 释放所有 values 数组
+            for (self.values_list.items) |row_values| {
+                self.allocator.free(row_values);
+            }
+            self.values_list.deinit(self.allocator);
+
             self.allocator.destroy(self);
         }
 
-        // TODO: 实现完整的 INSERT 功能 (Story 011)
+        /// 插入单行数据
+        ///
+        /// ## 参数
+        /// - row: 包含列名和值的结构体 (必须是匿名结构体)
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.value(.{
+        ///     .name = "Alice",
+        ///     .email = "alice@example.com",
+        ///     .age = 25,
+        /// });
+        /// ```
+        pub fn value(self: *Self, row: anytype) !*Self {
+            const RowType = @TypeOf(row);
+            const row_type_info = @typeInfo(RowType);
+
+            if (row_type_info != .@"struct") {
+                @compileError("value() requires a struct");
+            }
+
+            const fields = row_type_info.@"struct".fields;
+
+            // 第一次调用时，初始化列名
+            if (self.columns.items.len == 0) {
+                inline for (fields) |field| {
+                    try self.columns.append(self.allocator, field.name);
+                }
+            }
+
+            // 转换值为 QueryArg
+            var row_values = try self.allocator.alloc(QueryArg, fields.len);
+            errdefer self.allocator.free(row_values);
+
+            inline for (fields, 0..) |field, i| {
+                const field_value = @field(row, field.name);
+                row_values[i] = QueryArg.fromValue(field_value);
+            }
+
+            try self.values_list.append(self.allocator, row_values);
+            return self;
+        }
+
+        /// 批量插入多行数据
+        ///
+        /// ## 参数
+        /// - rows: 结构体切片
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const users = [_]User{
+        ///     .{ .name = "Alice", .email = "alice@example.com" },
+        ///     .{ .name = "Bob", .email = "bob@example.com" },
+        /// };
+        /// try query.values(&users);
+        /// ```
+        pub fn values(self: *Self, rows: anytype) !*Self {
+            const RowsType = @TypeOf(rows);
+            const rows_type_info = @typeInfo(RowsType);
+
+            // 确保是切片或数组指针 - 使用编译时常量避免运行时评估
+            const is_valid = comptime blk: {
+                if (rows_type_info != .pointer) break :blk false;
+                // 接受切片或数组指针
+                if (rows_type_info.pointer.size == .slice) break :blk true;
+                if (rows_type_info.pointer.size == .one) {
+                    // 检查指向的是否是数组
+                    const child_info = @typeInfo(rows_type_info.pointer.child);
+                    break :blk child_info == .array;
+                }
+                break :blk false;
+            };
+            if (!is_valid) {
+                @compileError("values() requires a slice or array pointer");
+            }
+
+            // 遍历每一行
+            for (rows) |row| {
+                _ = try self.value(row);
+            }
+
+            return self;
+        }
+
+        /// 添加 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
+        ///
+        /// ## 参数
+        /// - cols: 要返回的列名数组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.returning(&.{"id", "created_at"});
+        /// ```
+        pub fn returning(self: *Self, cols: []const []const u8) !*Self {
+            // 编译时检查方言是否支持 RETURNING
+            if (comptime !dialect.supportsReturning()) {
+                @compileError("RETURNING is not supported by " ++ @tagName(dialect));
+            }
+
+            self.returning_columns = cols;
+            return self;
+        }
+
+        /// 添加 ON CONFLICT 子句 (仅 PostgreSQL 和 SQLite 支持)
+        ///
+        /// ## 参数
+        /// - clause: ON CONFLICT 子句配置
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.onConflict(.{
+        ///     .columns = &.{"email"},
+        ///     .action = .do_update,
+        ///     .update_columns = &.{"name", "updated_at"},
+        /// });
+        /// ```
+        pub fn onConflict(self: *Self, clause: OnConflictClause) !*Self {
+            // 编译时检查方言是否支持 ON CONFLICT
+            if (comptime !dialect.supportsOnConflict()) {
+                @compileError("ON CONFLICT is not supported by " ++ @tagName(dialect));
+            }
+
+            self.on_conflict = clause;
+            return self;
+        }
+
+        /// 添加 ON DUPLICATE KEY UPDATE 子句 (仅 MySQL 支持)
+        ///
+        /// ## 参数
+        /// - update: ON DUPLICATE KEY UPDATE 配置
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.onDuplicateKeyUpdate(.{
+        ///     .columns = &.{"name", "email"},
+        /// });
+        /// ```
+        pub fn onDuplicateKeyUpdate(self: *Self, update: OnDuplicateKeyUpdate) !*Self {
+            // 编译时检查方言
+            if (comptime dialect != .mysql) {
+                @compileError("ON DUPLICATE KEY UPDATE is MySQL-specific");
+            }
+
+            self.on_duplicate_key = update;
+            return self;
+        }
+
+        /// 构建 INSERT SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            if (self.columns.items.len == 0 or self.values_list.items.len == 0) {
+                return error.NoValuesToInsert;
+            }
+
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
+
+            // INSERT INTO table (columns)
+            try buf.appendSlice(self.allocator, "INSERT INTO ");
+            try buf.appendSlice(self.allocator, self.table_name);
+            try buf.appendSlice(self.allocator, " (");
+
+            for (self.columns.items, 0..) |col, i| {
+                if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                try buf.appendSlice(self.allocator, col);
+            }
+
+            try buf.appendSlice(self.allocator, ") VALUES ");
+
+            // VALUES (...)
+            var param_index: usize = 1;
+            for (self.values_list.items, 0..) |_, row_idx| {
+                if (row_idx > 0) try buf.appendSlice(self.allocator, ", ");
+                try buf.appendSlice(self.allocator, "(");
+
+                for (self.columns.items, 0..) |_, col_idx| {
+                    if (col_idx > 0) try buf.appendSlice(self.allocator, ", ");
+
+                    // 生成占位符 - 根据方言生成不同格式
+                    switch (dialect) {
+                        .postgresql => try std.fmt.format(buf.writer(self.allocator), "${d}", .{param_index}),
+                        .mysql, .sqlite => try buf.appendSlice(self.allocator, "?"),
+                    }
+                    param_index += 1;
+                }
+
+                try buf.appendSlice(self.allocator, ")");
+            }
+
+            // ON CONFLICT (PostgreSQL/SQLite)
+            if (self.on_conflict) |conflict| {
+                try buf.appendSlice(self.allocator, " ON CONFLICT");
+
+                if (conflict.columns) |cols| {
+                    try buf.appendSlice(self.allocator, " (");
+                    for (cols, 0..) |col, i| {
+                        if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                        try buf.appendSlice(self.allocator, col);
+                    }
+                    try buf.appendSlice(self.allocator, ")");
+                }
+
+                try buf.appendSlice(self.allocator, " ");
+                try buf.appendSlice(self.allocator, conflict.action.toSQL());
+
+                if (conflict.action == .do_update) {
+                    if (conflict.update_columns) |update_cols| {
+                        try buf.appendSlice(self.allocator, " SET ");
+                        for (update_cols, 0..) |col, i| {
+                            if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                            try buf.appendSlice(self.allocator, col);
+                            try buf.appendSlice(self.allocator, " = EXCLUDED.");
+                            try buf.appendSlice(self.allocator, col);
+                        }
+                    }
+                }
+            }
+
+            // ON DUPLICATE KEY UPDATE (MySQL)
+            if (self.on_duplicate_key) |dup_key| {
+                try buf.appendSlice(self.allocator, " ON DUPLICATE KEY UPDATE ");
+                for (dup_key.columns, 0..) |col, i| {
+                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                    try buf.appendSlice(self.allocator, col);
+                    try buf.appendSlice(self.allocator, " = VALUES(");
+                    try buf.appendSlice(self.allocator, col);
+                    try buf.appendSlice(self.allocator, ")");
+                }
+            }
+
+            // RETURNING (PostgreSQL/SQLite)
+            if (self.returning_columns) |ret_cols| {
+                try buf.appendSlice(self.allocator, " RETURNING ");
+                for (ret_cols, 0..) |col, i| {
+                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                    try buf.appendSlice(self.allocator, col);
+                }
+            }
+
+            return buf.toOwnedSlice(self.allocator);
+        }
+
+        /// 执行插入查询
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            for (self.values_list.items) |row_values| {
+                try all_args.appendSlice(self.allocator, row_values);
+            }
+
+            // 执行查询
+            const result = try self.db.exec(query_str, all_args.items);
+            defer result.close();
+        }
     };
 }
 
@@ -736,6 +1033,244 @@ test "SelectQuery: Complete complex query" {
         "HAVING COUNT(o.id) > $3 " ++
         "ORDER BY order_count DESC " ++
         "LIMIT 10";
+
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+// ============================================
+// InsertQuery 测试
+// ============================================
+
+test "InsertQuery: 基本实例化" {
+    const PostgresInsertQuery = InsertQuery(User, .postgresql);
+    const MySQLInsertQuery = InsertQuery(User, .mysql);
+    const SQLiteInsertQuery = InsertQuery(User, .sqlite);
+
+    try std.testing.expect(PostgresInsertQuery != MySQLInsertQuery);
+    try std.testing.expect(PostgresInsertQuery != SQLiteInsertQuery);
+    try std.testing.expect(MySQLInsertQuery != SQLiteInsertQuery);
+}
+
+test "InsertQuery: 单行插入 (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3)", sql);
+}
+
+test "InsertQuery: 单行插入 (MySQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .mysql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Bob",
+        .email = "bob@example.com",
+        .age = 30,
+    });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES (?, ?, ?)", sql);
+}
+
+test "InsertQuery: 批量插入" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const users = [_]struct { name: []const u8, email: []const u8, age: u32 }{
+        .{ .name = "Alice", .email = "alice@example.com", .age = 25 },
+        .{ .name = "Bob", .email = "bob@example.com", .age = 30 },
+        .{ .name = "Carol", .email = "carol@example.com", .age = 35 },
+    };
+
+    _ = try query.values(&users);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "INSERT INTO users (name, email, age) VALUES " ++
+        "($1, $2, $3), ($4, $5, $6), ($7, $8, $9)";
+
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "InsertQuery: RETURNING (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    _ = try query.returning(&.{ "id", "name" });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id, name", sql);
+}
+
+test "InsertQuery: ON CONFLICT DO NOTHING (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    const conflict_cols = [_][]const u8{"email"};
+    _ = try query.onConflict(.{
+        .columns = &conflict_cols,
+        .action = .do_nothing,
+        .update_columns = null,
+    });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3) ON CONFLICT (email) DO NOTHING", sql);
+}
+
+test "InsertQuery: ON CONFLICT DO UPDATE (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    const conflict_cols = [_][]const u8{"email"};
+    const update_cols = [_][]const u8{ "name", "age" };
+    _ = try query.onConflict(.{
+        .columns = &conflict_cols,
+        .action = .do_update,
+        .update_columns = &update_cols,
+    });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) " ++
+        "ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, age = EXCLUDED.age";
+
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "InsertQuery: ON DUPLICATE KEY UPDATE (MySQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .mysql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    const update_cols = [_][]const u8{ "name", "age" };
+    _ = try query.onDuplicateKeyUpdate(.{
+        .columns = &update_cols,
+    });
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "INSERT INTO users (name, email, age) VALUES (?, ?, ?) " ++
+        "ON DUPLICATE KEY UPDATE name = VALUES(name), age = VALUES(age)";
+
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const users = [_]struct { name: []const u8, email: []const u8, age: u32 }{
+        .{ .name = "Alice", .email = "alice@example.com", .age = 25 },
+        .{ .name = "Bob", .email = "bob@example.com", .age = 30 },
+    };
+
+    _ = try query.values(&users);
+
+    const conflict_cols = [_][]const u8{"email"};
+    const update_cols = [_][]const u8{"name"};
+    _ = try query.onConflict(.{
+        .columns = &conflict_cols,
+        .action = .do_update,
+        .update_columns = &update_cols,
+    });
+
+    _ = try query.returning(&.{"id"});
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3), ($4, $5, $6) " ++
+        "ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name " ++
+        "RETURNING id";
 
     try std.testing.expectEqualStrings(expected, sql);
 }

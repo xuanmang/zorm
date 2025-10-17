@@ -619,3 +619,100 @@ test "HavingClause creation" {
     try testing.expectEqualStrings("COUNT(*) > $1", having_clause.condition);
     try testing.expectEqual(@as(usize, 1), having_clause.args.len);
 }
+
+// ========== INSERT 相关类型 ==========
+
+/// 冲突处理动作
+///
+/// 用于 PostgreSQL/SQLite 的 ON CONFLICT 子句。
+pub const ConflictAction = enum {
+    /// DO NOTHING - 忽略冲突的行
+    do_nothing,
+
+    /// DO UPDATE - 更新冲突的行
+    do_update,
+
+    /// 转换为 SQL 字符串
+    pub fn toSQL(self: ConflictAction) []const u8 {
+        return switch (self) {
+            .do_nothing => "DO NOTHING",
+            .do_update => "DO UPDATE",
+        };
+    }
+};
+
+/// ON CONFLICT 子句 (PostgreSQL/SQLite)
+///
+/// 用于处理插入冲突的情况，支持 UPSERT 操作。
+///
+/// 使用示例:
+/// ```zig
+/// const conflict = OnConflictClause{
+///     .columns = &[_][]const u8{"email"},
+///     .action = .do_update,
+///     .update_columns = &[_][]const u8{"name", "updated_at"},
+/// };
+/// ```
+pub const OnConflictClause = struct {
+    /// 冲突检测的列 (用于 ON CONFLICT (columns))
+    /// 如果为 null，则使用 ON CONFLICT 不指定列
+    columns: ?[]const []const u8,
+
+    /// 冲突处理动作
+    action: ConflictAction,
+
+    /// 要更新的列 (仅当 action = .do_update 时使用)
+    update_columns: ?[]const []const u8,
+};
+
+/// ON DUPLICATE KEY UPDATE 子句 (MySQL)
+///
+/// MySQL 特定的 UPSERT 语法。
+///
+/// 使用示例:
+/// ```zig
+/// const updates = OnDuplicateKeyUpdate{
+///     .columns = &[_][]const u8{"name", "updated_at"},
+/// };
+/// ```
+pub const OnDuplicateKeyUpdate = struct {
+    /// 要更新的列
+    columns: []const []const u8,
+};
+
+test "ConflictAction.toSQL" {
+    const testing = std.testing;
+
+    try testing.expectEqualStrings("DO NOTHING", ConflictAction.do_nothing.toSQL());
+    try testing.expectEqualStrings("DO UPDATE", ConflictAction.do_update.toSQL());
+}
+
+test "OnConflictClause creation" {
+    const testing = std.testing;
+
+    const columns = [_][]const u8{"email"};
+    const update_columns = [_][]const u8{ "name", "updated_at" };
+
+    const conflict = OnConflictClause{
+        .columns = &columns,
+        .action = .do_update,
+        .update_columns = &update_columns,
+    };
+
+    try testing.expectEqual(@as(usize, 1), conflict.columns.?.len);
+    try testing.expectEqual(ConflictAction.do_update, conflict.action);
+    try testing.expectEqual(@as(usize, 2), conflict.update_columns.?.len);
+}
+
+test "OnDuplicateKeyUpdate creation" {
+    const testing = std.testing;
+
+    const columns = [_][]const u8{ "name", "email" };
+    const update = OnDuplicateKeyUpdate{
+        .columns = &columns,
+    };
+
+    try testing.expectEqual(@as(usize, 2), update.columns.len);
+    try testing.expectEqualStrings("name", update.columns[0]);
+    try testing.expectEqualStrings("email", update.columns[1]);
+}

@@ -51,6 +51,13 @@ pub const driver = struct {
     pub const pool = @import("driver/pool.zig");
 };
 
+// 导出 Mapper 模块
+pub const mapper = struct {
+    pub const type_info = @import("mapper/type_info.zig");
+    pub const field_mapper = @import("mapper/field_mapper.zig");
+    pub const result_scanner = @import("mapper/result_scanner.zig");
+};
+
 // 导出常用驱动类型
 pub const PostgresDriver = driver.postgres.PostgresDriver;
 pub const Connection = driver.connection.Connection;
@@ -80,6 +87,12 @@ pub const SelectQuery = query.SelectQuery;
 pub const InsertQuery = query.InsertQuery;
 pub const UpdateQuery = query.UpdateQuery;
 pub const DeleteQuery = query.DeleteQuery;
+
+// 导出 Mapper 类型和函数
+pub const ScanOptions = mapper.result_scanner.ScanOptions;
+pub const scanAll = mapper.result_scanner.scanAll;
+pub const scanOne = mapper.result_scanner.scanOne;
+pub const scanRow = mapper.field_mapper.scanRow;
 
 // 导出完整的错误类型模块
 pub const errors = @import("error.zig");

@@ -46,6 +46,7 @@ pub const hooks = @import("hooks/hooks.zig");
 pub const driver = struct {
     pub const postgres = @import("driver/postgres.zig");
     pub const connection = @import("driver/connection.zig");
+    pub const pool = @import("driver/pool.zig");
 };
 
 // 导出常用驱动类型
@@ -54,6 +55,9 @@ pub const Connection = driver.connection.Connection;
 pub const Result = driver.connection.Result;
 pub const Rows = driver.connection.Rows;
 pub const Row = driver.connection.Row;
+pub const Pool = driver.pool.Pool;
+pub const PoolConfig = driver.pool.PoolConfig;
+pub const PoolStats = driver.pool.PoolStats;
 
 // 导出常用类型
 pub const DB = core.DB;
@@ -68,29 +72,9 @@ pub const InsertQuery = query.InsertQuery;
 pub const UpdateQuery = query.UpdateQuery;
 pub const DeleteQuery = query.DeleteQuery;
 
-// 导出错误类型
-pub const Error = error{
-    /// 数据库连接失败
-    ConnectionFailed,
-    /// 连接已关闭
-    ConnectionClosed,
-    /// 查询执行失败
-    QueryFailed,
-    /// 没有找到匹配的行
-    NoRows,
-    /// 扫描结果到结构体失败
-    ScanError,
-    /// 事务已经开始
-    TransactionAlreadyStarted,
-    /// 没有活动的事务
-    NoActiveTransaction,
-    /// 不支持的功能
-    UnsupportedFeature,
-    /// 无效的查询
-    InvalidQuery,
-    /// 内存分配失败
-    OutOfMemory,
-};
+// 导出完整的错误类型模块
+pub const errors = @import("error.zig");
+pub const Error = errors.Error;
 
 // 版本信息
 pub const version = std.SemanticVersion{

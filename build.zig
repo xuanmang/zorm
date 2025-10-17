@@ -93,6 +93,26 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    // 连接池测试
+    const pool_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/pool_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    pool_test_module.addImport("zorm", zorm_module);
+
+    const pool_tests = b.addTest(.{
+        .root_module = pool_test_module,
+    });
+
+    const run_pool_tests = b.addRunArtifact(pool_tests);
+    const pool_test_step = b.step("test-pool", "Run connection pool tests");
+    pool_test_step.dependOn(&run_pool_tests.step);
+
+    // 将 pool 测试添加到主测试步骤
+    test_step.dependOn(&run_pool_tests.step);
+
     // PostgreSQL 集成测试
     if (enable_postgres) {
         const postgres_test_module = b.createModule(.{

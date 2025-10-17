@@ -75,7 +75,6 @@ pub const ColumnType = enum {
                 .uuid => "TEXT",
                 .bytea => "BLOB",
             },
-            else => @compileError("Unsupported dialect"),
         };
     }
 };

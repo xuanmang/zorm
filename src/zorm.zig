@@ -44,7 +44,14 @@ pub const hooks = @import("core/hooks.zig");
 pub const dialect = @import("dialect/dialect.zig");
 pub const sql = @import("dialect/sql.zig");
 pub const query = @import("query/query.zig");
-pub const schema = @import("schema/schema.zig");
+pub const schema = struct {
+    pub const ColumnType = @import("schema/schema.zig").ColumnType;
+    pub const TableMeta = @import("schema/schema.zig").TableMeta;
+    pub const ColumnMeta = @import("schema/schema.zig").ColumnMeta;
+    pub const getTableMeta = @import("schema/schema.zig").getTableMeta;
+    pub const Table = @import("schema/table.zig").Table;
+    pub const Column = @import("schema/table.zig").Column;
+};
 pub const driver = struct {
     pub const postgres = @import("driver/postgres.zig");
     pub const connection = @import("driver/connection.zig");
@@ -93,6 +100,11 @@ pub const ScanOptions = mapper.result_scanner.ScanOptions;
 pub const scanAll = mapper.result_scanner.scanAll;
 pub const scanOne = mapper.result_scanner.scanOne;
 pub const scanRow = mapper.field_mapper.scanRow;
+
+// 导出 Schema 类型
+pub const Table = schema.Table;
+pub const Column = schema.Column;
+pub const ColumnType = schema.ColumnType;
 
 // 导出完整的错误类型模块
 pub const errors = @import("error.zig");

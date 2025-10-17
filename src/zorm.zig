@@ -40,11 +40,11 @@ const builtin = @import("builtin");
 // 导出核心模块
 pub const core = @import("core/db.zig");
 pub const transaction = @import("core/transaction.zig");
+pub const hooks = @import("core/hooks.zig");
 pub const dialect = @import("dialect/dialect.zig");
 pub const sql = @import("dialect/sql.zig");
 pub const query = @import("query/query.zig");
 pub const schema = @import("schema/schema.zig");
-pub const hooks = @import("hooks/hooks.zig");
 pub const driver = struct {
     pub const postgres = @import("driver/postgres.zig");
     pub const connection = @import("driver/connection.zig");
@@ -69,6 +69,11 @@ pub const TransactionError = transaction.TransactionError;
 pub const Dialect = dialect.Dialect;
 pub const Feature = dialect.Feature;
 pub const QueryArg = @import("types.zig").QueryArg;
+
+// 导出钩子类型
+pub const QueryHook = hooks.QueryHook;
+pub const LoggingHook = hooks.LoggingHook;
+pub const HookChain = hooks.HookChain;
 
 // 导出查询构建器
 pub const SelectQuery = query.SelectQuery;

@@ -16,6 +16,8 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const dialect_mod = @import("../dialect/dialect.zig");
 const Dialect = dialect_mod.Dialect;
+const hooks_mod = @import("hooks.zig");
+const QueryHook = hooks_mod.QueryHook;
 
 /// DB 配置选项
 pub const DBOptions = struct {
@@ -205,6 +207,7 @@ pub fn DB(comptime dialect: Dialect) type {
         options: DBOptions,
         stats: DBStats,
         current_tx: ?*Tx,
+        query_hook: ?QueryHook,
 
         /// 创建数据库实例
         ///
@@ -229,6 +232,7 @@ pub fn DB(comptime dialect: Dialect) type {
                 .options = options,
                 .stats = .{},
                 .current_tx = null,
+                .query_hook = null,
             };
 
             return self;
@@ -264,6 +268,25 @@ pub fn DB(comptime dialect: Dialect) type {
         /// 获取统计信息的副本
         pub fn getStats(self: *const Self) DBStats {
             return self.stats;
+        }
+
+        /// 设置查询钩子
+        ///
+        /// ## 参数
+        /// - hook: 查询钩子实例
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var logging = LoggingHook.init(true, 1000);
+        /// db.setHook(logging.hook());
+        /// ```
+        pub fn setHook(self: *Self, hook: QueryHook) void {
+            self.query_hook = hook;
+        }
+
+        /// 移除查询钩子
+        pub fn removeHook(self: *Self) void {
+            self.query_hook = null;
         }
 
         /// 执行 SQL 语句(不返回结果)

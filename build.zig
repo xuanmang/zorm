@@ -113,6 +113,8 @@ pub fn build(b: *std.Build) void {
         "11_schema_migrations",
         "12_batch_operations",
         "13_advanced_queries",
+        "14_type_mapping",
+        "15_error_handling",
     };
 
     for (all_examples) |name| {

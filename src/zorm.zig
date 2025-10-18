@@ -118,6 +118,7 @@ pub const SelectQuery = query.SelectQuery;
 pub const InsertQuery = query.InsertQuery;
 pub const UpdateQuery = query.UpdateQuery;
 pub const DeleteQuery = query.DeleteQuery;
+pub const CreateTableQuery = query.CreateTableQuery;
 
 // 导出 Mapper 类型和函数
 pub const ScanOptions = mapper.result_scanner.ScanOptions;

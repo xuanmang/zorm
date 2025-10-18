@@ -246,6 +246,26 @@ pub fn build(b: *std.Build) void {
     // 将 examples 测试添加到主测试步骤
     test_step.dependOn(&run_examples_tests.step);
 
+    // DB 集成测试
+    const db_integration_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/db_integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    db_integration_test_module.addImport("zorm", zorm_module);
+
+    const db_integration_tests = b.addTest(.{
+        .root_module = db_integration_test_module,
+    });
+
+    const run_db_integration_tests = b.addRunArtifact(db_integration_tests);
+    const db_integration_test_step = b.step("test-db-integration", "Run DB integration tests");
+    db_integration_test_step.dependOn(&run_db_integration_tests.step);
+
+    // 将 DB 集成测试添加到主测试步骤
+    test_step.dependOn(&run_db_integration_tests.step);
+
     // PostgreSQL 集成测试
     if (enable_postgres) {
         const postgres_test_module = b.createModule(.{

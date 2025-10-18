@@ -18,6 +18,8 @@ const dialect_mod = @import("../dialect/dialect.zig");
 const Dialect = dialect_mod.Dialect;
 const hooks_mod = @import("hooks.zig");
 const QueryHook = hooks_mod.QueryHook;
+const types_mod = @import("../types.zig");
+const QueryArg = types_mod.QueryArg;
 
 /// DB 配置选项
 pub const DBOptions = struct {
@@ -102,17 +104,17 @@ pub const Conn = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        exec: *const fn (ptr: *anyopaque, query: []const u8, args: []const []const u8) anyerror!void,
-        query: *const fn (ptr: *anyopaque, query: []const u8, args: []const []const u8) anyerror!*Result,
+        exec: *const fn (ptr: *anyopaque, query: []const u8, args: []const QueryArg) anyerror!void,
+        query: *const fn (ptr: *anyopaque, query: []const u8, args: []const QueryArg) anyerror!*Result,
         begin: *const fn (ptr: *anyopaque) anyerror!*Tx,
         close: *const fn (ptr: *anyopaque) void,
     };
 
-    pub fn exec(self: Conn, query_str: []const u8, args: []const []const u8) !void {
+    pub fn exec(self: Conn, query_str: []const u8, args: []const QueryArg) !void {
         return self.vtable.exec(self.ptr, query_str, args);
     }
 
-    pub fn query(self: Conn, query_str: []const u8, args: []const []const u8) !*Result {
+    pub fn query(self: Conn, query_str: []const u8, args: []const QueryArg) !*Result {
         return self.vtable.query(self.ptr, query_str, args);
     }
 
@@ -155,17 +157,17 @@ pub const Tx = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        exec: *const fn (ptr: *anyopaque, query: []const u8, args: []const []const u8) anyerror!void,
-        query: *const fn (ptr: *anyopaque, query: []const u8, args: []const []const u8) anyerror!*Result,
+        exec: *const fn (ptr: *anyopaque, query: []const u8, args: []const QueryArg) anyerror!void,
+        query: *const fn (ptr: *anyopaque, query: []const u8, args: []const QueryArg) anyerror!*Result,
         commit: *const fn (ptr: *anyopaque) anyerror!void,
         rollback: *const fn (ptr: *anyopaque) anyerror!void,
     };
 
-    pub fn exec(self: *Tx, query_str: []const u8, args: []const []const u8) !void {
+    pub fn exec(self: *Tx, query_str: []const u8, args: []const QueryArg) !void {
         return self.vtable.exec(self.ptr, query_str, args);
     }
 
-    pub fn query(self: *Tx, query_str: []const u8, args: []const []const u8) !*Result {
+    pub fn query(self: *Tx, query_str: []const u8, args: []const QueryArg) !*Result {
         return self.vtable.query(self.ptr, query_str, args);
     }
 
@@ -298,7 +300,7 @@ pub fn DB(comptime dialect: Dialect) type {
         ///
         /// ## 错误
         /// 如果查询执行失败,返回相应的错误
-        pub fn exec(self: *Self, query_str: []const u8, args: []const []const u8) !void {
+        pub fn exec(self: *Self, query_str: []const u8, args: []const QueryArg) !void {
             self.stats.recordQuery();
 
             // 如果有活动事务,使用事务执行
@@ -321,7 +323,7 @@ pub fn DB(comptime dialect: Dialect) type {
         ///
         /// ## 返回
         /// 返回查询结果集,调用者负责调用 result.close() 释放资源
-        pub fn query(self: *Self, query_str: []const u8, args: []const []const u8) !*Result {
+        pub fn query(self: *Self, query_str: []const u8, args: []const QueryArg) !*Result {
             self.stats.recordQuery();
 
             // 如果有活动事务,使用事务执行

@@ -38,7 +38,15 @@ pub fn build(b: *std.Build) void {
     // 添加 pg.zig 模块
     zorm_module.addImport("pg", pg_dep.module("pg"));
 
-    // 示例程序
+    // 创建 examples_common 模块
+    const examples_common_module = b.createModule(.{
+        .root_source_file = b.path("examples/common/db_config.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    examples_common_module.addImport("pg", pg_dep.module("pg"));
+
+    // 原有的基础示例程序
     const example_module = b.createModule(.{
         .root_source_file = b.path("examples/basic.zig"),
         .target = target,
@@ -56,15 +64,62 @@ pub fn build(b: *std.Build) void {
     const example_step = b.step("example", "Build and install example");
     example_step.dependOn(&install_example.step);
 
-    const run_example = b.addRunArtifact(example);
-    run_example.step.dependOn(&install_example.step);
+    const run_basic_example = b.addRunArtifact(example);
+    run_basic_example.step.dependOn(&install_example.step);
 
     if (b.args) |args| {
-        run_example.addArgs(args);
+        run_basic_example.addArgs(args);
     }
 
-    const run_example_step = b.step("run-example", "Run the basic example");
-    run_example_step.dependOn(&run_example.step);
+    const run_basic_example_step = b.step("run-basic", "Run the basic example");
+    run_basic_example_step.dependOn(&run_basic_example.step);
+
+    // 添加运行单个示例的步骤
+    const example_name = b.option([]const u8, "example", "示例名称") orelse "00_setup_database";
+    const example_path = b.fmt("examples/{s}.zig", .{example_name});
+
+    const run_example_module = b.createModule(.{
+        .root_source_file = b.path(example_path),
+        .target = target,
+        .optimize = optimize,
+    });
+    run_example_module.addImport("pg", pg_dep.module("pg"));
+    run_example_module.addImport("common/db_config.zig", examples_common_module);
+
+    const run_example = b.addExecutable(.{
+        .name = "example",
+        .root_module = run_example_module,
+    });
+
+    const run_example_cmd = b.addRunArtifact(run_example);
+    const run_example_step = b.step("run-example", "运行指定示例 (使用 -Dexample=示例名)");
+    run_example_step.dependOn(&run_example_cmd.step);
+
+    // 添加运行所有示例的步骤
+    const run_all_examples_step = b.step("run-all-examples", "运行所有示例");
+
+    const all_examples = [_][]const u8{
+        "00_setup_database",
+        // 后续会添加更多示例
+    };
+
+    for (all_examples) |name| {
+        const exe_module = b.createModule(.{
+            .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
+            .target = target,
+            .optimize = optimize,
+        });
+        exe_module.addImport("pg", pg_dep.module("pg"));
+        exe_module.addImport("common/db_config.zig", examples_common_module);
+
+        const exe = b.addExecutable(.{
+            .name = name,
+            .root_module = exe_module,
+        });
+
+        const run_cmd = b.addRunArtifact(exe);
+        run_all_examples_step.dependOn(&run_cmd.step);
+    }
 
     // 格式化检查
     const fmt_check = b.addFmt(.{

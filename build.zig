@@ -115,6 +115,8 @@ pub fn build(b: *std.Build) void {
         "13_advanced_queries",
         "14_type_mapping",
         "15_error_handling",
+        "16_hooks_system",
+        "17_connection_pool",
     };
 
     for (all_examples) |name| {

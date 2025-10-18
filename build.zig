@@ -100,7 +100,11 @@ pub fn build(b: *std.Build) void {
 
     const all_examples = [_][]const u8{
         "00_setup_database",
-        // 后续会添加更多示例
+        "01_basic_connection",
+        "02_simple_select",
+        "03_insert_operations",
+        "04_update_operations",
+        "05_delete_operations",
     };
 
     for (all_examples) |name| {

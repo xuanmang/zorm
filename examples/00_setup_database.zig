@@ -13,7 +13,7 @@
 //!
 //! 本示例展示如何使用 ZORM 的 Table API 生成 CREATE TABLE SQL，
 //! 而不是手写原始 SQL。这体现了 ORM 的核心优势：
-//! - 声明式的表定义
+//! - 声明式的表定义 (链式 API)
 //! - 跨数据库方言的兼容性
 //! - 类型安全的约束定义
 
@@ -43,7 +43,7 @@ pub fn main() !void {
 
     // 创建表 (使用 ZORM Table API)
     std.debug.print("创建数据表...\n", .{});
-    try createTablesWithTableAPI(&driver, allocator);
+    try createTables(&driver, allocator);
     std.debug.print("✓ 所有表创建成功\n\n", .{});
 
     std.debug.print("数据库初始化完成！\n", .{});
@@ -57,97 +57,74 @@ pub fn main() !void {
 
 /// 创建 zorm_examples schema
 fn createSchema(driver: *zorm.PostgresDriver) !void {
-    const create_schema_sql = "CREATE SCHEMA IF NOT EXISTS zorm_examples";
-    _ = try driver.exec(create_schema_sql, &.{});
-
-    // 设置搜索路径
+    _ = try driver.exec("CREATE SCHEMA IF NOT EXISTS zorm_examples", &.{});
     _ = try driver.exec("SET search_path TO zorm_examples", &.{});
 }
 
-/// 使用 ZORM Table API 创建表
-/// 这展示了 ORM 的优势：声明式定义、跨方言兼容、类型安全
-fn createTablesWithTableAPI(driver: *zorm.PostgresDriver, allocator: std.mem.Allocator) !void {
+/// 辅助函数: 执行 CREATE TABLE IF NOT EXISTS
+fn createTableIfNotExists(driver: *zorm.PostgresDriver, allocator: std.mem.Allocator, table: *const zorm.Table) !void {
+    const create_sql = try table.toSQL(.postgresql);
+    defer allocator.free(create_sql);
+
+    // toSQL() 生成 "CREATE TABLE xxx (...)"，我们需要插入 "IF NOT EXISTS"
+    const final_sql = try std.fmt.allocPrint(allocator, "CREATE TABLE IF NOT EXISTS {s}", .{create_sql[13..]});
+    defer allocator.free(final_sql);
+
+    _ = try driver.exec(final_sql, &.{});
+}
+
+/// 辅助函数: 创建带有默认时间戳的列
+fn timestampCol(name: []const u8) zorm.Column {
+    var col = zorm.Column.init(name, .bigint);
+    _ = col.setNotNull().setDefault("EXTRACT(EPOCH FROM NOW())::BIGINT");
+    return col;
+}
+
+/// 使用 ZORM Table API 创建所有表
+/// 展示了 ORM 的优势：声明式定义、链式 API、跨方言兼容
+fn createTables(driver: *zorm.PostgresDriver, allocator: std.mem.Allocator) !void {
     // 创建 users 表
     std.debug.print("  创建 users 表...\n", .{});
     {
-        var users_table = try zorm.Table.init(allocator, "users");
-        defer users_table.deinit();
+        var table = try zorm.Table.init(allocator, "users");
+        defer table.deinit();
 
-        // 使用声明式 API 定义列
-        var id_col = zorm.Column.init("id", .bigint);
-        _ = id_col.setPrimaryKey().setAutoIncrement();
-        _ = try users_table.addColumn(id_col);
+        var id = zorm.Column.init("id", .bigint);
+        var name = zorm.Column.init("name", .text);
+        var email = zorm.Column.init("email", .text);
 
-        var name_col = zorm.Column.init("name", .text);
-        _ = name_col.setNotNull();
-        _ = try users_table.addColumn(name_col);
+        _ = try table.addColumn(id.setPrimaryKey().setAutoIncrement().*);
+        _ = try table.addColumn(name.setNotNull().*);
+        _ = try table.addColumn(email.setNotNull().setUnique().*);
+        _ = try table.addColumn(timestampCol("created_at"));
+        _ = try table.addColumn(timestampCol("updated_at"));
 
-        var email_col = zorm.Column.init("email", .text);
-        _ = email_col.setNotNull().setUnique();
-        _ = try users_table.addColumn(email_col);
-
-        var created_at_col = zorm.Column.init("created_at", .bigint);
-        _ = created_at_col.setNotNull().setDefault("EXTRACT(EPOCH FROM NOW())::BIGINT");
-        _ = try users_table.addColumn(created_at_col);
-
-        var updated_at_col = zorm.Column.init("updated_at", .bigint);
-        _ = updated_at_col.setNotNull().setDefault("EXTRACT(EPOCH FROM NOW())::BIGINT");
-        _ = try users_table.addColumn(updated_at_col);
-
-        // 生成并执行 SQL
-        const create_sql = try users_table.toSQL(.postgresql);
-        defer allocator.free(create_sql);
-
-        const final_sql = try std.fmt.allocPrint(allocator, "CREATE TABLE IF NOT EXISTS {s}", .{create_sql[13..]});
-        defer allocator.free(final_sql);
-
-        _ = try driver.exec(final_sql, &.{});
+        try createTableIfNotExists(driver, allocator, &table);
     }
 
     // 创建 posts 表
     std.debug.print("  创建 posts 表...\n", .{});
     {
-        var posts_table = try zorm.Table.init(allocator, "posts");
-        defer posts_table.deinit();
+        var table = try zorm.Table.init(allocator, "posts");
+        defer table.deinit();
 
-        var id_col = zorm.Column.init("id", .bigint);
-        _ = id_col.setPrimaryKey().setAutoIncrement();
-        _ = try posts_table.addColumn(id_col);
+        var id = zorm.Column.init("id", .bigint);
+        var user_id = zorm.Column.init("user_id", .bigint);
+        var title = zorm.Column.init("title", .text);
+        var content = zorm.Column.init("content", .text);
+        var status = zorm.Column.init("status", .text);
+        var published_at = zorm.Column.init("published_at", .bigint);
 
-        var user_id_col = zorm.Column.init("user_id", .bigint);
-        _ = user_id_col.setNotNull().setForeignKey("users", "id");
-        _ = try posts_table.addColumn(user_id_col);
+        _ = try table.addColumn(id.setPrimaryKey().setAutoIncrement().*);
+        _ = try table.addColumn(user_id.setNotNull().setForeignKey("users", "id").*);
+        _ = try table.addColumn(title.setNotNull().*);
+        _ = try table.addColumn(content.setNotNull().*);
+        _ = try table.addColumn(status.setNotNull().setDefault("'draft'").setCheck("status IN ('draft', 'published', 'archived')").*);
+        _ = try table.addColumn(published_at);
+        _ = try table.addColumn(timestampCol("created_at"));
+        _ = try table.addColumn(timestampCol("updated_at"));
 
-        var title_col = zorm.Column.init("title", .text);
-        _ = title_col.setNotNull();
-        _ = try posts_table.addColumn(title_col);
-
-        var content_col = zorm.Column.init("content", .text);
-        _ = content_col.setNotNull();
-        _ = try posts_table.addColumn(content_col);
-
-        var status_col = zorm.Column.init("status", .text);
-        _ = status_col.setNotNull().setDefault("'draft'").setCheck("status IN ('draft', 'published', 'archived')");
-        _ = try posts_table.addColumn(status_col);
-
-        var published_at_col = zorm.Column.init("published_at", .bigint);
-        _ = try posts_table.addColumn(published_at_col);
-
-        var created_at_col = zorm.Column.init("created_at", .bigint);
-        _ = created_at_col.setNotNull().setDefault("EXTRACT(EPOCH FROM NOW())::BIGINT");
-        _ = try posts_table.addColumn(created_at_col);
-
-        var updated_at_col = zorm.Column.init("updated_at", .bigint);
-        _ = updated_at_col.setNotNull().setDefault("EXTRACT(EPOCH FROM NOW())::BIGINT");
-        _ = try posts_table.addColumn(updated_at_col);
-
-        const create_sql = try posts_table.toSQL(.postgresql);
-        defer allocator.free(create_sql);
-
-        const final_sql = try std.fmt.allocPrint(allocator, "CREATE TABLE IF NOT EXISTS {s}", .{create_sql[13..]});
-        defer allocator.free(final_sql);
-
-        _ = try driver.exec(final_sql, &.{});
+        try createTableIfNotExists(driver, allocator, &table);
 
         // 创建索引
         _ = try driver.exec("CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id)", &.{});
@@ -157,36 +134,21 @@ fn createTablesWithTableAPI(driver: *zorm.PostgresDriver, allocator: std.mem.All
     // 创建 comments 表
     std.debug.print("  创建 comments 表...\n", .{});
     {
-        var comments_table = try zorm.Table.init(allocator, "comments");
-        defer comments_table.deinit();
+        var table = try zorm.Table.init(allocator, "comments");
+        defer table.deinit();
 
-        var id_col = zorm.Column.init("id", .bigint);
-        _ = id_col.setPrimaryKey().setAutoIncrement();
-        _ = try comments_table.addColumn(id_col);
+        var id = zorm.Column.init("id", .bigint);
+        var post_id = zorm.Column.init("post_id", .bigint);
+        var user_id = zorm.Column.init("user_id", .bigint);
+        var content = zorm.Column.init("content", .text);
 
-        var post_id_col = zorm.Column.init("post_id", .bigint);
-        _ = post_id_col.setNotNull().setForeignKey("posts", "id");
-        _ = try comments_table.addColumn(post_id_col);
+        _ = try table.addColumn(id.setPrimaryKey().setAutoIncrement().*);
+        _ = try table.addColumn(post_id.setNotNull().setForeignKey("posts", "id").*);
+        _ = try table.addColumn(user_id.setNotNull().setForeignKey("users", "id").*);
+        _ = try table.addColumn(content.setNotNull().*);
+        _ = try table.addColumn(timestampCol("created_at"));
 
-        var user_id_col = zorm.Column.init("user_id", .bigint);
-        _ = user_id_col.setNotNull().setForeignKey("users", "id");
-        _ = try comments_table.addColumn(user_id_col);
-
-        var content_col = zorm.Column.init("content", .text);
-        _ = content_col.setNotNull();
-        _ = try comments_table.addColumn(content_col);
-
-        var created_at_col = zorm.Column.init("created_at", .bigint);
-        _ = created_at_col.setNotNull().setDefault("EXTRACT(EPOCH FROM NOW())::BIGINT");
-        _ = try comments_table.addColumn(created_at_col);
-
-        const create_sql = try comments_table.toSQL(.postgresql);
-        defer allocator.free(create_sql);
-
-        const final_sql = try std.fmt.allocPrint(allocator, "CREATE TABLE IF NOT EXISTS {s}", .{create_sql[13..]});
-        defer allocator.free(final_sql);
-
-        _ = try driver.exec(final_sql, &.{});
+        try createTableIfNotExists(driver, allocator, &table);
 
         // 创建索引
         _ = try driver.exec("CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id)", &.{});
@@ -196,47 +158,31 @@ fn createTablesWithTableAPI(driver: *zorm.PostgresDriver, allocator: std.mem.All
     // 创建 tags 表
     std.debug.print("  创建 tags 表...\n", .{});
     {
-        var tags_table = try zorm.Table.init(allocator, "tags");
-        defer tags_table.deinit();
+        var table = try zorm.Table.init(allocator, "tags");
+        defer table.deinit();
 
-        var id_col = zorm.Column.init("id", .bigint);
-        _ = id_col.setPrimaryKey().setAutoIncrement();
-        _ = try tags_table.addColumn(id_col);
+        var id = zorm.Column.init("id", .bigint);
+        var name = zorm.Column.init("name", .text);
 
-        var name_col = zorm.Column.init("name", .text);
-        _ = name_col.setNotNull().setUnique();
-        _ = try tags_table.addColumn(name_col);
+        _ = try table.addColumn(id.setPrimaryKey().setAutoIncrement().*);
+        _ = try table.addColumn(name.setNotNull().setUnique().*);
 
-        const create_sql = try tags_table.toSQL(.postgresql);
-        defer allocator.free(create_sql);
-
-        const final_sql = try std.fmt.allocPrint(allocator, "CREATE TABLE IF NOT EXISTS {s}", .{create_sql[13..]});
-        defer allocator.free(final_sql);
-
-        _ = try driver.exec(final_sql, &.{});
+        try createTableIfNotExists(driver, allocator, &table);
     }
 
     // 创建 post_tags 表 (多对多关联)
     std.debug.print("  创建 post_tags 表...\n", .{});
     {
-        var post_tags_table = try zorm.Table.init(allocator, "post_tags");
-        defer post_tags_table.deinit();
+        var table = try zorm.Table.init(allocator, "post_tags");
+        defer table.deinit();
 
-        var post_id_col = zorm.Column.init("post_id", .bigint);
-        _ = post_id_col.setNotNull().setPrimaryKey().setForeignKey("posts", "id");
-        _ = try post_tags_table.addColumn(post_id_col);
+        var post_id = zorm.Column.init("post_id", .bigint);
+        var tag_id = zorm.Column.init("tag_id", .bigint);
 
-        var tag_id_col = zorm.Column.init("tag_id", .bigint);
-        _ = tag_id_col.setNotNull().setPrimaryKey().setForeignKey("tags", "id");
-        _ = try post_tags_table.addColumn(tag_id_col);
+        _ = try table.addColumn(post_id.setNotNull().setPrimaryKey().setForeignKey("posts", "id").*);
+        _ = try table.addColumn(tag_id.setNotNull().setPrimaryKey().setForeignKey("tags", "id").*);
 
-        const create_sql = try post_tags_table.toSQL(.postgresql);
-        defer allocator.free(create_sql);
-
-        const final_sql = try std.fmt.allocPrint(allocator, "CREATE TABLE IF NOT EXISTS {s}", .{create_sql[13..]});
-        defer allocator.free(final_sql);
-
-        _ = try driver.exec(final_sql, &.{});
+        try createTableIfNotExists(driver, allocator, &table);
 
         // 创建索引
         _ = try driver.exec("CREATE INDEX IF NOT EXISTS idx_post_tags_tag_id ON post_tags(tag_id)", &.{});

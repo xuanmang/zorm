@@ -1128,6 +1128,129 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
     };
 }
 
+// =============================================================================
+// CREATE TABLE Query
+// =============================================================================
+
+/// CREATE TABLE 查询构建器
+///
+/// 提供声明式 API 构建和执行 CREATE TABLE DDL 语句。
+/// 封装 Table 结构，提供链式 API 和数据库方言支持。
+///
+/// ## 参数
+/// - dialect: 数据库方言 (编译时确定)
+///
+/// ## 示例
+/// ```zig
+/// var query = try db.newCreateTable("users");
+/// defer query.deinit();
+///
+/// try query.ifNotExists()
+///     .column(Column.init("id", .bigint).setPrimaryKey().setAutoIncrement())
+///     .column(Column.init("name", .varchar).setNotNull())
+///     .column(Column.init("email", .varchar).setUnique())
+///     .exec();
+/// ```
+pub fn CreateTableQuery(comptime dialect: Dialect) type {
+    const DBType = db_mod.DB(dialect);
+    const schema_mod = @import("../schema/table.zig");
+
+    return struct {
+        const Self = @This();
+
+        allocator: Allocator,
+        db: *DBType,
+        table: schema_mod.Table,
+        if_not_exists_flag: bool = false,
+
+        /// 初始化 CREATE TABLE 查询构建器
+        pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            self.* = .{
+                .allocator = allocator,
+                .db = db,
+                .table = try schema_mod.Table.init(allocator, table_name),
+                .if_not_exists_flag = false,
+            };
+
+            return self;
+        }
+
+        /// 释放资源
+        pub fn deinit(self: *Self) void {
+            self.table.deinit();
+            self.allocator.destroy(self);
+        }
+
+        /// 添加 IF NOT EXISTS 子句
+        ///
+        /// 如果表已存在，CREATE TABLE 不会失败。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.ifNotExists();
+        /// ```
+        pub fn ifNotExists(self: *Self) *Self {
+            self.if_not_exists_flag = true;
+            return self;
+        }
+
+        /// 添加列定义
+        ///
+        /// ## 参数
+        /// - col: 列定义，使用 Column.init() 创建
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var id_col = Column.init("id", .bigint);
+        /// _ = id_col.setPrimaryKey().setAutoIncrement();
+        /// try query.column(id_col);
+        /// ```
+        pub fn column(self: *Self, col: schema_mod.Column) !*Self {
+            _ = try self.table.addColumn(col);
+            return self;
+        }
+
+        /// 构建 CREATE TABLE SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            const base_sql = try self.table.toSQL(dialect);
+            defer self.allocator.free(base_sql);
+
+            // 如果不需要 IF NOT EXISTS，直接返回
+            if (!self.if_not_exists_flag) {
+                return self.allocator.dupe(u8, base_sql);
+            }
+
+            // 插入 IF NOT EXISTS
+            // "CREATE TABLE users (...)" -> "CREATE TABLE IF NOT EXISTS users (...)"
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
+
+            try buf.appendSlice(self.allocator, "CREATE TABLE IF NOT EXISTS ");
+            // 跳过 "CREATE TABLE "
+            try buf.appendSlice(self.allocator, base_sql[13..]);
+
+            return buf.toOwnedSlice(self.allocator);
+        }
+
+        /// 执行 CREATE TABLE 语句
+        ///
+        /// ## 错误
+        /// - error.QueryFailed: DDL 执行失败
+        /// - error.TableAlreadyExists: 表已存在（未使用 IF NOT EXISTS 时）
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 执行 DDL（无参数绑定）
+            const result = try self.db.exec(query_str, &.{});
+            defer result.close();
+        }
+    };
+}
+
 // ============================================
 // 单元测试
 // ============================================
@@ -1905,4 +2028,142 @@ test "DeleteQuery: 完整复杂DELETE (PostgreSQL)" {
 
     const expected = "DELETE FROM users WHERE age < $1 AND status = $2 OR deleted_at IS NOT NULL RETURNING id, name, deleted_at";
     try std.testing.expectEqualStrings(expected, sql);
+}
+
+// =============================================================================
+// CreateTableQuery 测试
+// =============================================================================
+
+test "CreateTableQuery: 基本 CREATE TABLE" {
+    const Column = @import("../schema/table.zig").Column;
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    var id_col = Column.init("id", .bigint);
+    _ = id_col.setPrimaryKey().setAutoIncrement();
+    _ = try query.column(id_col);
+
+    var name_col = Column.init("name", .varchar);
+    _ = name_col.setNotNull();
+    _ = try query.column(name_col);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    // 验证 SQL 包含关键部分
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "name VARCHAR NOT NULL") != null);
+}
+
+test "CreateTableQuery: IF NOT EXISTS" {
+    const Column = @import("../schema/table.zig").Column;
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = query.ifNotExists();
+
+    var id_col = Column.init("id", .bigint);
+    _ = id_col.setPrimaryKey();
+    _ = try query.column(id_col);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE IF NOT EXISTS users") != null);
+}
+
+test "CreateTableQuery: 外键约束" {
+    const Column = @import("../schema/table.zig").Column;
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "posts");
+    defer query.deinit();
+
+    var id_col = Column.init("id", .bigint);
+    _ = id_col.setPrimaryKey();
+    _ = try query.column(id_col);
+
+    var user_id_col = Column.init("user_id", .bigint);
+    _ = user_id_col.setForeignKey("users", "id").setNotNull();
+    _ = try query.column(user_id_col);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE posts") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "user_id BIGINT NOT NULL REFERENCES users(id)") != null);
+}
+
+test "CreateTableQuery: MySQL 语法" {
+    const Column = @import("../schema/table.zig").Column;
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try CreateTableQuery(.mysql).init(std.testing.allocator, @ptrCast(&db), "products");
+    defer query.deinit();
+
+    var id_col = Column.init("id", .bigint);
+    _ = id_col.setPrimaryKey().setAutoIncrement();
+    _ = try query.column(id_col);
+
+    var name_col = Column.init("name", .varchar);
+    _ = name_col.setNotNull();
+    _ = try query.column(name_col);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    // MySQL 使用 AUTO_INCREMENT 而不是 GENERATED ALWAYS AS IDENTITY
+    try std.testing.expect(std.mem.indexOf(u8, sql, "AUTO_INCREMENT") != null);
+}
+
+test "CreateTableQuery: 复合主键" {
+    const Column = @import("../schema/table.zig").Column;
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "user_roles");
+    defer query.deinit();
+
+    var user_id_col = Column.init("user_id", .bigint);
+    _ = user_id_col.setPrimaryKey();
+    _ = try query.column(user_id_col);
+
+    var role_id_col = Column.init("role_id", .bigint);
+    _ = role_id_col.setPrimaryKey();
+    _ = try query.column(role_id_col);
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    // 复合主键应该单独声明
+    try std.testing.expect(std.mem.indexOf(u8, sql, "PRIMARY KEY (user_id, role_id)") != null);
 }

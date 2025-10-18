@@ -198,6 +198,7 @@ pub fn DB(comptime dialect: Dialect) type {
     const InsertQuery = query_mod.InsertQuery;
     const UpdateQuery = query_mod.UpdateQuery;
     const DeleteQuery = query_mod.DeleteQuery;
+    const CreateTableQuery = query_mod.CreateTableQuery;
 
     return struct {
         const Self = @This();
@@ -491,6 +492,33 @@ pub fn DB(comptime dialect: Dialect) type {
             };
 
             return DeleteQuery(T, dialect).init(self.allocator, self, table_name);
+        }
+
+        /// 创建 CREATE TABLE 查询构建器
+        ///
+        /// ## 参数
+        /// - table_name: 表名
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const Column = @import("schema").Column;
+        ///
+        /// var query = try db.newCreateTable("users");
+        /// defer query.deinit();
+        ///
+        /// var id_col = Column.init("id", .bigint);
+        /// _ = id_col.setPrimaryKey().setAutoIncrement();
+        ///
+        /// var name_col = Column.init("name", .varchar);
+        /// _ = name_col.setNotNull();
+        ///
+        /// try query.ifNotExists()
+        ///     .column(id_col)
+        ///     .column(name_col)
+        ///     .exec();
+        /// ```
+        pub fn newCreateTable(self: *Self, table_name: []const u8) !*CreateTableQuery(dialect) {
+            return CreateTableQuery(dialect).init(self.allocator, self, table_name);
         }
     };
 }

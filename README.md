@@ -30,7 +30,6 @@
 - ✅ 构建系统 (build.zig)
 
 **待实现:**
-- 🔨 数据库驱动实现 (libpq, libmysqlclient, sqlite3)
 - 🔨 完整的结果扫描和序列化
 - 🔨 关系映射 (Belongs-To, Has-Many, Many-to-Many)
 - 🔨 Schema 迁移系统

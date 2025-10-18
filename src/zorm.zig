@@ -71,6 +71,24 @@ pub const mapper = struct {
     pub const result_scanner = @import("mapper/result_scanner.zig");
 };
 
+// 导出 Reflect 模块
+pub const reflect = struct {
+    pub const comptime_utils = @import("reflect/comptime_utils.zig");
+
+    // 导出常用 comptime 函数（便于直接使用）
+    pub const getTableName = comptime_utils.getTableName;
+    pub const inferSQLType = comptime_utils.inferSQLType;
+    pub const isOptional = comptime_utils.isOptional;
+    pub const isPrimaryKeyField = comptime_utils.isPrimaryKeyField;
+    pub const isTimestampField = comptime_utils.isTimestampField;
+    pub const isForeignKeyField = comptime_utils.isForeignKeyField;
+    pub const inferForeignKeyTable = comptime_utils.inferForeignKeyTable;
+    pub const getDefaultValue = comptime_utils.getDefaultValue;
+    pub const getCheckConstraint = comptime_utils.getCheckConstraint;
+    pub const isUniqueField = comptime_utils.isUniqueField;
+    pub const isAutoIncrementField = comptime_utils.isAutoIncrementField;
+};
+
 // 导出常用驱动类型
 pub const PostgresDriver = driver.postgres.PostgresDriver;
 pub const Connection = driver.connection.Connection;
@@ -132,6 +150,8 @@ pub const version = std.SemanticVersion{
 // 测试
 test {
     std.testing.refAllDecls(@This());
+    // 显式引用所有子模块的测试
+    _ = @import("reflect/comptime_utils.zig");
 }
 
 test "version" {

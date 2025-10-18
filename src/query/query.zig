@@ -1153,9 +1153,10 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
 ///     .column(Column.init("email", .varchar).setUnique())
 ///     .exec();
 /// ```
-pub fn CreateTableQuery(comptime dialect: Dialect) type {
+pub fn CreateTableQuery(comptime T: type, comptime dialect: Dialect) type {
     const DBType = db_mod.DB(dialect);
     const schema_mod = @import("../schema/table.zig");
+    const reflection = @import("../schema/reflection.zig");
 
     return struct {
         const Self = @This();
@@ -1166,14 +1167,69 @@ pub fn CreateTableQuery(comptime dialect: Dialect) type {
         if_not_exists_flag: bool = false,
 
         /// 初始化 CREATE TABLE 查询构建器
-        pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
+        ///
+        /// 自动从模型类型 T 生成表结构：
+        /// - 从 T.table_name 或类型名推断表名
+        /// - 从 struct 字段自动生成列定义
+        /// - 支持后续手动添加额外列
+        pub fn init(allocator: Allocator, db: *DBType) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
+
+            // 获取表名
+            const table_name = comptime reflection.getTableName(T);
+
+            // 创建表对象
+            var table = try schema_mod.Table.init(allocator, table_name);
+            errdefer table.deinit();
+
+            // 从 T 自动生成列
+            const columns = try reflection.generateColumns(T, allocator);
+            defer allocator.free(columns);
+
+            for (columns) |col| {
+                _ = try table.addColumn(col);
+            }
 
             self.* = .{
                 .allocator = allocator,
                 .db = db,
-                .table = try schema_mod.Table.init(allocator, table_name),
+                .table = table,
+                .if_not_exists_flag = false,
+            };
+
+            return self;
+        }
+
+        /// 初始化空的 CREATE TABLE 查询构建器（不自动生成列）
+        ///
+        /// 用于需要完全手动控制列定义的场景，例如添加复杂约束。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newCreateTableEmpty(User);
+        /// defer query.deinit();
+        ///
+        /// _ = try query.column(.{
+        ///     .name = "id",
+        ///     .column_type = .bigserial,
+        ///     .primary_key = true,
+        /// });
+        /// ```
+        pub fn initEmpty(allocator: Allocator, db: *DBType) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            // 获取表名
+            const table_name = comptime reflection.getTableName(T);
+
+            // 创建空表对象（不生成列）
+            const table = try schema_mod.Table.init(allocator, table_name);
+
+            self.* = .{
+                .allocator = allocator,
+                .db = db,
+                .table = table,
                 .if_not_exists_flag = false,
             };
 
@@ -1249,6 +1305,323 @@ pub fn CreateTableQuery(comptime dialect: Dialect) type {
             // 执行 DDL（无参数绑定）
             const result = try self.db.exec(query_str, &.{});
             defer result.close();
+        }
+    };
+}
+
+/// DROP TABLE 查询构建器
+///
+/// ## 示例
+/// ```zig
+/// const User = struct {
+///     id: i64,
+///     pub const table_name = "users";
+/// };
+///
+/// var query = try db.newDropTable(User);
+/// defer query.deinit();
+///
+/// _ = query.ifExists();  // 添加 IF EXISTS 子句
+/// try query.exec();
+/// ```
+pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
+    const DBType = db_mod.DB(dialect);
+    const reflection = @import("../schema/reflection.zig");
+
+    return struct {
+        const Self = @This();
+
+        allocator: Allocator,
+        db: *DBType,
+        table_name: []const u8,
+        if_exists_flag: bool = false,
+        cascade_flag: bool = false,
+
+        /// 初始化 DROP TABLE 查询构建器
+        ///
+        /// 自动从模型类型 T 获取表名
+        pub fn init(allocator: Allocator, db: *DBType) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            // 从 T 获取表名
+            const table_name = comptime reflection.getTableName(T);
+
+            self.* = .{
+                .allocator = allocator,
+                .db = db,
+                .table_name = table_name,
+                .if_exists_flag = false,
+                .cascade_flag = false,
+            };
+
+            return self;
+        }
+
+        /// 释放资源
+        pub fn deinit(self: *Self) void {
+            self.allocator.destroy(self);
+        }
+
+        /// 添加 IF EXISTS 子句
+        ///
+        /// 如果表不存在,DROP TABLE 不会失败
+        pub fn ifExists(self: *Self) *Self {
+            self.if_exists_flag = true;
+            return self;
+        }
+
+        /// 添加 CASCADE 子句
+        ///
+        /// 自动删除依赖此表的对象(例如外键约束)
+        pub fn cascade(self: *Self) *Self {
+            self.cascade_flag = true;
+            return self;
+        }
+
+        /// 构建 DROP TABLE SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            var buf = std.ArrayList(u8).init(self.allocator);
+            errdefer buf.deinit();
+
+            try buf.appendSlice("DROP TABLE ");
+            
+            if (self.if_exists_flag) {
+                try buf.appendSlice("IF EXISTS ");
+            }
+            
+            try buf.appendSlice(self.table_name);
+            
+            if (self.cascade_flag) {
+                try buf.appendSlice(" CASCADE");
+            }
+
+            return buf.toOwnedSlice();
+        }
+
+        /// 执行 DROP TABLE 语句
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            try self.db.exec(query_str, &.{});
+        }
+    };
+}
+
+/// CREATE INDEX 查询构建器
+///
+/// ## 示例
+/// ```zig
+/// const User = struct {
+///     id: i64,
+///     email: []const u8,
+///     pub const table_name = "users";
+/// };
+///
+/// var query = try db.newCreateIndex(User, "idx_email");
+/// defer query.deinit();
+///
+/// _ = query.unique();  // 唯一索引
+/// _ = try query.column("email");
+/// try query.exec();
+/// ```
+pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
+    const DBType = db_mod.DB(dialect);
+    const reflection = @import("../schema/reflection.zig");
+
+    return struct {
+        const Self = @This();
+
+        allocator: Allocator,
+        db: *DBType,
+        table_name: []const u8,
+        index_name: []const u8,
+        columns: std.ArrayList([]const u8),
+        unique_flag: bool = false,
+        if_not_exists_flag: bool = false,
+
+        /// 初始化 CREATE INDEX 查询构建器
+        ///
+        /// 自动从模型类型 T 获取表名
+        pub fn init(allocator: Allocator, db: *DBType, index_name: []const u8) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            // 从 T 获取表名
+            const table_name = comptime reflection.getTableName(T);
+
+            self.* = .{
+                .allocator = allocator,
+                .db = db,
+                .table_name = table_name,
+                .index_name = index_name,
+                .columns = std.ArrayList([]const u8).init(allocator),
+                .unique_flag = false,
+                .if_not_exists_flag = false,
+            };
+
+            return self;
+        }
+
+        /// 释放资源
+        pub fn deinit(self: *Self) void {
+            self.columns.deinit();
+            self.allocator.destroy(self);
+        }
+
+        /// 创建唯一索引
+        pub fn unique(self: *Self) *Self {
+            self.unique_flag = true;
+            return self;
+        }
+
+        /// 添加 IF NOT EXISTS 子句 (仅 PostgreSQL 和 SQLite 支持)
+        pub fn ifNotExists(self: *Self) *Self {
+            self.if_not_exists_flag = true;
+            return self;
+        }
+
+        /// 添加索引列
+        pub fn column(self: *Self, col_name: []const u8) !*Self {
+            try self.columns.append(col_name);
+            return self;
+        }
+
+        /// 构建 CREATE INDEX SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            var buf = std.ArrayList(u8).init(self.allocator);
+            errdefer buf.deinit();
+
+            try buf.appendSlice("CREATE ");
+            
+            if (self.unique_flag) {
+                try buf.appendSlice("UNIQUE ");
+            }
+            
+            try buf.appendSlice("INDEX ");
+            
+            // IF NOT EXISTS 支持 (PostgreSQL 和 SQLite)
+            if (self.if_not_exists_flag and (dialect == .postgresql or dialect == .sqlite)) {
+                try buf.appendSlice("IF NOT EXISTS ");
+            }
+            
+            try buf.appendSlice(self.index_name);
+            try buf.appendSlice(" ON ");
+            try buf.appendSlice(self.table_name);
+            try buf.appendSlice(" (");
+            
+            // 添加列名
+            for (self.columns.items, 0..) |col, i| {
+                if (i > 0) try buf.appendSlice(", ");
+                try buf.appendSlice(col);
+            }
+            
+            try buf.appendSlice(")");
+
+            return buf.toOwnedSlice();
+        }
+
+        /// 执行 CREATE INDEX 语句
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            try self.db.exec(query_str, &.{});
+        }
+    };
+}
+
+/// DROP INDEX 查询构建器
+///
+/// ## 示例
+/// ```zig
+/// const User = struct {
+///     id: i64,
+///     pub const table_name = "users";
+/// };
+///
+/// var query = try db.newDropIndex(User, "idx_email");
+/// defer query.deinit();
+///
+/// _ = query.ifExists();
+/// try query.exec();
+/// ```
+pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
+    const DBType = db_mod.DB(dialect);
+    const reflection = @import("../schema/reflection.zig");
+
+    return struct {
+        const Self = @This();
+
+        allocator: Allocator,
+        db: *DBType,
+        table_name: []const u8,
+        index_name: []const u8,
+        if_exists_flag: bool = false,
+
+        /// 初始化 DROP INDEX 查询构建器
+        ///
+        /// 自动从模型类型 T 获取表名
+        pub fn init(allocator: Allocator, db: *DBType, index_name: []const u8) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            // 从 T 获取表名
+            const table_name = comptime reflection.getTableName(T);
+
+            self.* = .{
+                .allocator = allocator,
+                .db = db,
+                .table_name = table_name,
+                .index_name = index_name,
+                .if_exists_flag = false,
+            };
+
+            return self;
+        }
+
+        /// 释放资源
+        pub fn deinit(self: *Self) void {
+            self.allocator.destroy(self);
+        }
+
+        /// 添加 IF EXISTS 子句
+        pub fn ifExists(self: *Self) *Self {
+            self.if_exists_flag = true;
+            return self;
+        }
+
+        /// 构建 DROP INDEX SQL 语句
+        pub fn build(self: *Self) ![]const u8 {
+            var buf = std.ArrayList(u8).init(self.allocator);
+            errdefer buf.deinit();
+
+            try buf.appendSlice("DROP INDEX ");
+
+            if (self.if_exists_flag) {
+                try buf.appendSlice("IF EXISTS ");
+            }
+
+            // MySQL 语法: DROP INDEX index_name ON table_name
+            // PostgreSQL/SQLite 语法: DROP INDEX index_name
+            if (dialect == .mysql) {
+                try buf.appendSlice(self.index_name);
+                try buf.appendSlice(" ON ");
+                try buf.appendSlice(self.table_name);
+            } else {
+                try buf.appendSlice(self.index_name);
+            }
+
+            return buf.toOwnedSlice();
+        }
+
+        /// 执行 DROP INDEX 语句
+        pub fn exec(self: *Self) !void {
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            try self.db.exec(query_str, &.{});
         }
     };
 }

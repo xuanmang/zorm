@@ -12,6 +12,57 @@ const std = @import("std");
 const zorm = @import("zorm");
 const db_config = @import("common/db_config.zig");
 
+// ============================================
+// 模型定义
+// ============================================
+
+const User = struct {
+    id: i64,
+    name: []const u8,
+    email: []const u8,
+    created_at: i64,
+    updated_at: i64,
+
+    pub const table_name = "users";
+};
+
+const Post = struct {
+    id: i64,
+    user_id: i64,
+    title: []const u8,
+    content: []const u8,
+    status: []const u8,
+    published_at: ?i64,
+    created_at: i64,
+    updated_at: i64,
+
+    pub const table_name = "posts";
+};
+
+const Comment = struct {
+    id: i64,
+    post_id: i64,
+    user_id: i64,
+    content: []const u8,
+    created_at: i64,
+
+    pub const table_name = "comments";
+};
+
+const Tag = struct {
+    id: i64,
+    name: []const u8,
+
+    pub const table_name = "tags";
+};
+
+const PostTag = struct {
+    post_id: i64,
+    tag_id: i64,
+
+    pub const table_name = "post_tags";
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -51,7 +102,7 @@ pub fn main() !void {
 /// 创建用户表 - 展示 ZORM CreateTableQuery API
 fn createUsersTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
     _ = allocator;
-    var query = try db.newCreateTable("users");
+    var query = try db.newCreateTableEmpty(User);
     defer query.deinit();
 
     _ = try query
@@ -93,7 +144,7 @@ fn createUsersTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !vo
 /// 创建文章表
 fn createPostsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
     _ = allocator;
-    var query = try db.newCreateTable("posts");
+    var query = try db.newCreateTableEmpty(Post);
     defer query.deinit();
 
     _ = try query
@@ -156,7 +207,7 @@ fn createPostsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !vo
 /// 创建评论表
 fn createCommentsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
     _ = allocator;
-    var query = try db.newCreateTable("comments");
+    var query = try db.newCreateTableEmpty(Comment);
     defer query.deinit();
 
     _ = try query
@@ -206,7 +257,7 @@ fn createCommentsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) 
 /// 创建标签表
 fn createTagsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
     _ = allocator;
-    var query = try db.newCreateTable("tags");
+    var query = try db.newCreateTableEmpty(Tag);
     defer query.deinit();
 
     _ = try query
@@ -231,7 +282,7 @@ fn createTagsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !voi
 /// 创建文章-标签关联表
 fn createPostTagsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
     _ = allocator;
-    var query = try db.newCreateTable("post_tags");
+    var query = try db.newCreateTableEmpty(PostTag);
     defer query.deinit();
 
     _ = try query
@@ -263,19 +314,50 @@ fn createPostTagsTable(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) 
     std.debug.print("  ✓ post_tags\n", .{});
 }
 
-/// 创建索引 (暂时使用原始 SQL，后续可扩展为 CreateIndexQuery API)
+/// 创建索引 - 使用 ZORM CreateIndexQuery API
 fn createIndexes(db: *zorm.DB(.postgresql)) !void {
     // 文章相关索引
-    try db.exec("CREATE INDEX IF NOT EXISTS idx_posts_user_id ON posts(user_id)", &.{});
-    try db.exec("CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status)", &.{});
-    std.debug.print("  ✓ posts 索引\n", .{});
+    {
+        var query_user_id = try db.newCreateIndex(Post, "idx_posts_user_id");
+        defer query_user_id.deinit();
+        _ = query_user_id.ifNotExists();
+        _ = try query_user_id.column("user_id");
+        try query_user_id.exec();
+
+        var query_status = try db.newCreateIndex(Post, "idx_posts_status");
+        defer query_status.deinit();
+        _ = query_status.ifNotExists();
+        _ = try query_status.column("status");
+        try query_status.exec();
+
+        std.debug.print("  ✓ posts 索引\n", .{});
+    }
 
     // 评论相关索引
-    try db.exec("CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id)", &.{});
-    try db.exec("CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments(user_id)", &.{});
-    std.debug.print("  ✓ comments 索引\n", .{});
+    {
+        var query_post_id = try db.newCreateIndex(Comment, "idx_comments_post_id");
+        defer query_post_id.deinit();
+        _ = query_post_id.ifNotExists();
+        _ = try query_post_id.column("post_id");
+        try query_post_id.exec();
+
+        var query_user_id = try db.newCreateIndex(Comment, "idx_comments_user_id");
+        defer query_user_id.deinit();
+        _ = query_user_id.ifNotExists();
+        _ = try query_user_id.column("user_id");
+        try query_user_id.exec();
+
+        std.debug.print("  ✓ comments 索引\n", .{});
+    }
 
     // 标签关联索引
-    try db.exec("CREATE INDEX IF NOT EXISTS idx_post_tags_tag_id ON post_tags(tag_id)", &.{});
-    std.debug.print("  ✓ post_tags 索引\n", .{});
+    {
+        var query_tag_id = try db.newCreateIndex(PostTag, "idx_post_tags_tag_id");
+        defer query_tag_id.deinit();
+        _ = query_tag_id.ifNotExists();
+        _ = try query_tag_id.column("tag_id");
+        try query_tag_id.exec();
+
+        std.debug.print("  ✓ post_tags 索引\n", .{});
+    }
 }

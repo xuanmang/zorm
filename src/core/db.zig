@@ -205,6 +205,9 @@ pub fn DB(comptime dialect: Dialect) type {
     const UpdateQuery = query_mod.UpdateQuery;
     const DeleteQuery = query_mod.DeleteQuery;
     const CreateTableQuery = query_mod.CreateTableQuery;
+    const DropTableQuery = query_mod.DropTableQuery;
+    const CreateIndexQuery = query_mod.CreateIndexQuery;
+    const DropIndexQuery = query_mod.DropIndexQuery;
 
     return struct {
         const Self = @This();
@@ -674,16 +677,117 @@ pub fn DB(comptime dialect: Dialect) type {
         /// var id_col = Column.init("id", .bigint);
         /// _ = id_col.setPrimaryKey().setAutoIncrement();
         ///
-        /// var name_col = Column.init("name", .varchar);
-        /// _ = name_col.setNotNull();
+        /// const User = struct {
+        ///     id: i64,
+        ///     name: []const u8,
+        ///     email: ?[]const u8,
+        ///     pub const table_name = "users";
+        /// };
         ///
-        /// try query.ifNotExists()
-        ///     .column(id_col)
-        ///     .column(name_col)
-        ///     .exec();
+        /// var query = try db.newCreateTable(User);
+        /// defer query.deinit();
+        ///
+        /// try query.ifNotExists().exec();
         /// ```
-        pub fn newCreateTable(self: *Self, table_name: []const u8) !*CreateTableQuery(dialect) {
-            return CreateTableQuery(dialect).init(self.allocator, self, table_name);
+        pub fn newCreateTable(self: *Self, comptime T: type) !*CreateTableQuery(T, dialect) {
+            return CreateTableQuery(T, dialect).init(self.allocator, self);
+        }
+
+        /// 创建空的 CREATE TABLE 查询构建器（手动定义列）
+        ///
+        /// 不自动生成列，需要手动添加所有列定义。
+        /// 适用于需要精确控制列约束的场景（外键、CHECK、默认值等）。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     pub const table_name = "users";
+        /// };
+        ///
+        /// var query = try db.newCreateTableEmpty(User);
+        /// defer query.deinit();
+        ///
+        /// _ = try query.ifNotExists()
+        ///     .column(.{
+        ///         .name = "id",
+        ///         .column_type = .bigserial,
+        ///         .primary_key = true,
+        ///     });
+        /// try query.exec();
+        /// ```
+        pub fn newCreateTableEmpty(self: *Self, comptime T: type) !*CreateTableQuery(T, dialect) {
+            return CreateTableQuery(T, dialect).initEmpty(self.allocator, self);
+        }
+
+        /// 创建 DROP TABLE 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型（自动获取表名）
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     pub const table_name = "users";
+        /// };
+        ///
+        /// var query = try db.newDropTable(User);
+        /// defer query.deinit();
+        ///
+        /// _ = query.ifExists();  // 添加 IF EXISTS
+        /// try query.exec();
+        /// ```
+        pub fn newDropTable(self: *Self, comptime T: type) !*DropTableQuery(T, dialect) {
+            return DropTableQuery(T, dialect).init(self.allocator, self);
+        }
+
+        /// 创建 CREATE INDEX 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型（自动提取表名）
+        /// - index_name: 索引名
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     email: []const u8,
+        ///     pub const table_name = "users";
+        /// };
+        ///
+        /// var query = try db.newCreateIndex(User, "idx_email");
+        /// defer query.deinit();
+        ///
+        /// _ = query.unique();  // 唯一索引
+        /// _ = try query.column("email");
+        /// try query.exec();
+        /// ```
+        pub fn newCreateIndex(self: *Self, comptime T: type, index_name: []const u8) !*CreateIndexQuery(T, dialect) {
+            return CreateIndexQuery(T, dialect).init(self.allocator, self, index_name);
+        }
+
+        /// 创建 DROP INDEX 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型（自动提取表名）
+        /// - index_name: 索引名
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     pub const table_name = "users";
+        /// };
+        ///
+        /// var query = try db.newDropIndex(User, "idx_email");
+        /// defer query.deinit();
+        ///
+        /// _ = query.ifExists();
+        /// try query.exec();
+        /// ```
+        pub fn newDropIndex(self: *Self, comptime T: type, index_name: []const u8) !*DropIndexQuery(T, dialect) {
+            return DropIndexQuery(T, dialect).init(self.allocator, self, index_name);
         }
     };
 }

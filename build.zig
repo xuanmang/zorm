@@ -128,28 +128,11 @@ pub fn build(b: *std.Build) void {
     // 添加运行所有示例的步骤
     const run_all_examples_step = b.step("run-all-examples", "运行所有示例");
 
+    // 当前存在的示例文件列表
     const all_examples = [_][]const u8{
         "00_setup_database",
         "01_basic_connection",
-        "02_simple_select",
-        "03_insert_operations",
-        "04_update_operations",
-        "05_delete_operations",
-        "06_query_builder",
-        "07_transactions",
-        "08_relations_belongs_to",
-        "09_relations_has_many",
-        "10_relations_many_to_many",
-        "11_schema_migrations",
-        "12_batch_operations",
-        "13_advanced_queries",
-        "14_type_mapping",
-        "15_error_handling",
-        "16_hooks_system",
-        "17_connection_pool",
-        "18_raw_sql",
-        "19_pagination",
-        "20_aggregation",
+        // 其他示例待实现
     };
 
     const models_module = b.createModule(.{

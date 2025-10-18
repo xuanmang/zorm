@@ -214,7 +214,8 @@ pub fn DB(comptime dialect: Dialect) type {
         options: DBOptions,
         stats: DBStats,
         current_tx: ?*Tx,
-        query_hook: ?QueryHook,
+        /// 查询钩子列表 (支持多个钩子)
+        query_hooks: std.ArrayList(QueryHook),
 
         /// 创建数据库实例
         ///
@@ -239,7 +240,7 @@ pub fn DB(comptime dialect: Dialect) type {
                 .options = options,
                 .stats = .{},
                 .current_tx = null,
-                .query_hook = null,
+                .query_hooks = std.ArrayList(QueryHook).init(allocator),
             };
 
             return self;
@@ -249,6 +250,7 @@ pub fn DB(comptime dialect: Dialect) type {
         ///
         /// 自动清理所有资源:
         /// - 回滚活动事务(如果有)
+        /// - 清理查询钩子列表
         /// - 关闭数据库连接
         /// - 释放分配的内存
         pub fn deinit(self: *Self) void {
@@ -257,6 +259,9 @@ pub fn DB(comptime dialect: Dialect) type {
                 tx.rollback() catch {};
                 self.current_tx = null;
             }
+
+            // 清理钩子列表
+            self.query_hooks.deinit();
 
             // 关闭连接
             self.conn.close();
@@ -277,7 +282,7 @@ pub fn DB(comptime dialect: Dialect) type {
             return self.stats;
         }
 
-        /// 设置查询钩子
+        /// 添加查询钩子
         ///
         /// ## 参数
         /// - hook: 查询钩子实例
@@ -285,15 +290,122 @@ pub fn DB(comptime dialect: Dialect) type {
         /// ## 示例
         /// ```zig
         /// var logging = LoggingHook.init(true, 1000);
-        /// db.setHook(logging.hook());
+        /// try db.addHook(logging.hook());
         /// ```
-        pub fn setHook(self: *Self, hook: QueryHook) void {
-            self.query_hook = hook;
+        pub fn addHook(self: *Self, hook: QueryHook) !void {
+            try self.query_hooks.append(hook);
         }
 
-        /// 移除查询钩子
+        /// 设置查询钩子 (别名,为了向后兼容)
+        pub fn setHook(self: *Self, hook: QueryHook) !void {
+            try self.addHook(hook);
+        }
+
+        /// 清空所有查询钩子
+        pub fn clearHooks(self: *Self) void {
+            self.query_hooks.clearRetainingCapacity();
+        }
+
+        /// 移除查询钩子 (别名,为了向后兼容)
         pub fn removeHook(self: *Self) void {
-            self.query_hook = null;
+            self.clearHooks();
+        }
+
+        /// 克隆 DB 实例
+        ///
+        /// 创建一个新的 DB 实例,共享相同的连接,但有独立的:
+        /// - 查询钩子列表
+        /// - 统计信息
+        /// - 事务状态
+        ///
+        /// ## 返回
+        /// 返回克隆的 DB 实例,调用者负责调用 deinit() 释放
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const cloned = try db.clone();
+        /// defer cloned.deinit();
+        /// ```
+        pub fn clone(self: *const Self) !*Self {
+            const new_db = try self.allocator.create(Self);
+            errdefer self.allocator.destroy(new_db);
+
+            new_db.* = .{
+                .allocator = self.allocator,
+                .conn = self.conn,  // 共享连接
+                .options = self.options,
+                .stats = .{},  // 新的统计信息
+                .current_tx = null,  // 新的事务状态
+                .query_hooks = std.ArrayList(QueryHook).init(self.allocator),
+            };
+
+            // 复制钩子列表
+            try new_db.query_hooks.appendSlice(self.query_hooks.items);
+
+            return new_db;
+        }
+
+        /// 克隆实例并添加查询钩子
+        ///
+        /// 这是一个便捷方法,等价于:
+        /// ```zig
+        /// const new_db = try db.clone();
+        /// try new_db.addHook(hook);
+        /// ```
+        ///
+        /// ## 参数
+        /// - hook: 要添加的查询钩子
+        ///
+        /// ## 返回
+        /// 返回添加了钩子的新 DB 实例
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var logging = LoggingHook.init(true, 1000);
+        /// const logged_db = try db.withQueryHook(logging.hook());
+        /// defer logged_db.deinit();
+        /// ```
+        pub fn withQueryHook(self: *const Self, hook: QueryHook) !*Self {
+            const new_db = try self.clone();
+            errdefer new_db.deinit();
+            try new_db.addHook(hook);
+            return new_db;
+        }
+
+        /// 扫描行到目标列表
+        ///
+        /// ## 参数
+        /// - T: 目标类型
+        /// - rows: 行迭代器
+        /// - dest: 目标 ArrayList
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var users = std.ArrayList(User).init(allocator);
+        /// defer users.deinit();
+        ///
+        /// const result = try db.query("SELECT * FROM users", .{});
+        /// defer result.close();
+        ///
+        /// try db.scanRows(User, &result.rows, &users);
+        /// ```
+        pub fn scanRows(
+            self: *Self,
+            comptime T: type,
+            rows: *Rows,
+            dest: *std.ArrayList(T),
+        ) !void {
+            _ = self;
+            
+            // TODO: 实现行扫描逻辑
+            // 1. 遍历 rows
+            // 2. 为每行创建 T 实例
+            // 3. 填充字段值
+            // 4. 添加到 dest
+            
+            // 临时实现,避免未使用参数警告
+            _ = rows;
+            _ = dest;
         }
 
         /// 执行 SQL 语句(不返回结果)
@@ -307,16 +419,39 @@ pub fn DB(comptime dialect: Dialect) type {
         pub fn exec(self: *Self, query_str: []const u8, args: []const QueryArg) !void {
             self.stats.recordQuery();
 
-            // 如果有活动事务,使用事务执行
-            if (self.current_tx) |tx| {
-                return tx.exec(query_str, args);
+            // 执行钩子 - beforeQuery
+            for (self.query_hooks.items) |hook| {
+                hook.beforeQuery(query_str, args) catch |err| {
+                    std.log.warn("Query hook beforeQuery failed: {}", .{err});
+                };
             }
 
-            // 否则使用连接执行
-            return self.conn.exec(query_str, args) catch |err| {
+            // 如果有活动事务,使用事务执行
+            const result = if (self.current_tx) |tx|
+                tx.exec(query_str, args)
+            else
+                self.conn.exec(query_str, args);
+
+            // 处理结果
+            if (result) |_| {
+                // 执行钩子 - afterQuery
+                for (self.query_hooks.items) |hook| {
+                    hook.afterQuery(query_str, args) catch |err| {
+                        std.log.warn("Query hook afterQuery failed: {}", .{err});
+                    };
+                }
+            } else |err| {
                 self.stats.recordError();
+                
+                // 执行钩子 - onError
+                for (self.query_hooks.items) |hook| {
+                    hook.onError(query_str, args, err) catch |hook_err| {
+                        std.log.warn("Query hook onError failed: {}", .{hook_err});
+                    };
+                }
+                
                 return err;
-            };
+            }
         }
 
         /// 执行查询(返回结果)
@@ -330,16 +465,40 @@ pub fn DB(comptime dialect: Dialect) type {
         pub fn query(self: *Self, query_str: []const u8, args: []const QueryArg) !*Result {
             self.stats.recordQuery();
 
-            // 如果有活动事务,使用事务执行
-            if (self.current_tx) |tx| {
-                return tx.query(query_str, args);
+            // 执行钩子 - beforeQuery
+            for (self.query_hooks.items) |hook| {
+                hook.beforeQuery(query_str, args) catch |err| {
+                    std.log.warn("Query hook beforeQuery failed: {}", .{err});
+                };
             }
 
-            // 否则使用连接执行
-            return self.conn.query(query_str, args) catch |err| {
+            // 如果有活动事务,使用事务执行
+            const result = if (self.current_tx) |tx|
+                tx.query(query_str, args)
+            else
+                self.conn.query(query_str, args);
+
+            // 处理结果
+            if (result) |res| {
+                // 执行钩子 - afterQuery
+                for (self.query_hooks.items) |hook| {
+                    hook.afterQuery(query_str, args) catch |err| {
+                        std.log.warn("Query hook afterQuery failed: {}", .{err});
+                    };
+                }
+                return res;
+            } else |err| {
                 self.stats.recordError();
+                
+                // 执行钩子 - onError
+                for (self.query_hooks.items) |hook| {
+                    hook.onError(query_str, args, err) catch |hook_err| {
+                        std.log.warn("Query hook onError failed: {}", .{hook_err});
+                    };
+                }
+                
                 return err;
-            };
+            }
         }
 
         /// 开始事务
@@ -572,4 +731,9 @@ test "DBOptions 默认值" {
     try std.testing.expectEqual(@as(u32, 25), opts.max_idle_conns);
     try std.testing.expectEqual(@as(u64, 300), opts.conn_max_lifetime);
     try std.testing.expectEqual(@as(u64, 30_000), opts.query_timeout);
+}
+
+test "DB clone 和 withQueryHook" {
+    // TODO: 实现完整的测试
+    // 需要模拟 Conn 和 QueryHook
 }

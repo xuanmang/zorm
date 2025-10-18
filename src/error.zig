@@ -77,6 +77,11 @@ pub const Error = error{
     /// 使用场景: result.get("column_name") 时列名拼写错误或不存在
     ColumnNotFound,
 
+    /// 无效的列索引
+    /// 触发条件: 列索引超出结果集的列数范围
+    /// 使用场景: rows.columnName(999) 时索引越界
+    InvalidColumnIndex,
+
     /// 类型不匹配
     /// 触发条件: 数据库列类型与目标 Zig 类型不兼容
     /// 使用场景: 尝试将 VARCHAR 扫描到 i32,或 JSON 扫描到非结构体
@@ -273,6 +278,7 @@ test "all error types are defined" {
         error.NoRows,
         error.TooManyRows,
         error.ColumnNotFound,
+        error.InvalidColumnIndex,
         error.TypeMismatch,
         error.NullValue,
         // 事务错误
@@ -289,6 +295,6 @@ test "all error types are defined" {
         error.NoColumnsSpecified,
     };
 
-    // 验证数组长度符合预期(21个错误)
-    try testing.expectEqual(@as(usize, 21), errors.len);
+    // 验证数组长度符合预期(22个错误)
+    try testing.expectEqual(@as(usize, 22), errors.len);
 }

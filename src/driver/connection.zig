@@ -185,6 +185,35 @@ pub const Rows = struct {
         ///
         /// 清理驱动特定的资源。
         deinit: *const fn (*anyopaque, Allocator) void,
+
+        /// 获取列数
+        ///
+        /// 返回结果集的列数量。
+        ///
+        /// 使用示例:
+        /// ```zig
+        /// const col_count = rows.columnCount();
+        /// std.debug.print("Result has {} columns\n", .{col_count});
+        /// ```
+        columnCount: *const fn (*anyopaque) usize,
+
+        /// 获取列名
+        ///
+        /// 参数:
+        /// - index: 列索引 (从 0 开始)
+        ///
+        /// 返回:
+        /// - []const u8: 列名 (借用结果集内存)
+        ///
+        /// 错误:
+        /// - error.InvalidColumnIndex: 列索引越界
+        ///
+        /// 使用示例:
+        /// ```zig
+        /// const name = try rows.columnName(0);
+        /// std.debug.print("Column 0: {s}\n", .{name});
+        /// ```
+        columnName: *const fn (*anyopaque, usize) Error![]const u8,
     };
 
     /// 获取下一行
@@ -219,6 +248,54 @@ pub const Rows = struct {
         self.vtable.deinit(self.driver_rows, self.allocator);
         // 释放 VTable 本身
         self.allocator.destroy(self.vtable);
+    }
+
+    /// 获取列数
+    ///
+    /// 返回结果集的列数量。
+    ///
+    /// 使用示例:
+    /// ```zig
+    /// const rows = try conn.query("SELECT id, name FROM users", &.{});
+    /// defer rows.deinit();
+    ///
+    /// const col_count = rows.columnCount();
+    /// std.debug.print("Result has {} columns\n", .{col_count}); // 输出: 2
+    /// ```
+    pub fn columnCount(self: *const Rows) usize {
+        return self.vtable.columnCount(self.driver_rows);
+    }
+
+    /// 获取列名
+    ///
+    /// 根据列索引获取列名。
+    ///
+    /// 参数:
+    /// - index: 列索引 (从 0 开始)
+    ///
+    /// 返回:
+    /// - []const u8: 列名 (借用结果集内存,生命周期绑定到 Rows)
+    ///
+    /// 错误:
+    /// - error.InvalidColumnIndex: 列索引越界
+    ///
+    /// 使用示例:
+    /// ```zig
+    /// const rows = try conn.query("SELECT id, name, email FROM users", &.{});
+    /// defer rows.deinit();
+    ///
+    /// const col_count = rows.columnCount();
+    /// for (0..col_count) |i| {
+    ///     const name = try rows.columnName(i);
+    ///     std.debug.print("Column {}: {s}\n", .{i, name});
+    /// }
+    /// // 输出:
+    /// // Column 0: id
+    /// // Column 1: name
+    /// // Column 2: email
+    /// ```
+    pub fn columnName(self: *const Rows, index: usize) ![]const u8 {
+        return self.vtable.columnName(self.driver_rows, index);
     }
 };
 
@@ -523,4 +600,144 @@ test "Connection is comptime polymorphic" {
             @compileError("Expected different types");
         }
     }
+}
+
+test "Rows: columnCount and columnName" {
+    const testing = std.testing;
+
+    // Mock Rows implementation
+    const MockDriverRows = struct {
+        columns: []const []const u8,
+
+        fn columnCountImpl(ptr: *anyopaque) usize {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            return self.columns.len;
+        }
+
+        fn columnNameImpl(ptr: *anyopaque, index: usize) Error![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            if (index >= self.columns.len) {
+                return Error.InvalidColumnIndex;
+            }
+            return self.columns[index];
+        }
+
+        fn nextImpl(_: *anyopaque) Error!?Row {
+            return null;
+        }
+
+        fn deinitImpl(_: *anyopaque, _: Allocator) void {}
+    };
+
+    const columns = [_][]const u8{ "id", "name", "email" };
+    var mock_rows = MockDriverRows{ .columns = &columns };
+
+    var vtable = Rows.RowsVTable{
+        .next = MockDriverRows.nextImpl,
+        .deinit = MockDriverRows.deinitImpl,
+        .columnCount = MockDriverRows.columnCountImpl,
+        .columnName = MockDriverRows.columnNameImpl,
+    };
+
+    const rows = Rows{
+        .driver_rows = &mock_rows,
+        .vtable = &vtable,
+        .allocator = testing.allocator,
+    };
+
+    // 测试 columnCount
+    const col_count = rows.columnCount();
+    try testing.expectEqual(@as(usize, 3), col_count);
+
+    // 测试 columnName
+    try testing.expectEqualStrings("id", try rows.columnName(0));
+    try testing.expectEqualStrings("name", try rows.columnName(1));
+    try testing.expectEqualStrings("email", try rows.columnName(2));
+
+    // 测试越界索引
+    const result = rows.columnName(3);
+    try testing.expectError(Error.InvalidColumnIndex, result);
+}
+
+test "Row: all getter methods" {
+    const testing = std.testing;
+
+    // Mock Row implementation
+    const MockDriverRow = struct {
+        fn isNullImpl(_: *anyopaque, index: usize) bool {
+            return index == 2; // 假设第 2 列为 NULL
+        }
+
+        fn getIntImpl(_: *anyopaque, index: usize) Error!i64 {
+            return switch (index) {
+                0 => 42,
+                1 => 100,
+                else => Error.NullValue,
+            };
+        }
+
+        fn getFloatImpl(_: *anyopaque, index: usize) Error!f64 {
+            return switch (index) {
+                0 => 3.14,
+                1 => 2.718,
+                else => Error.NullValue,
+            };
+        }
+
+        fn getBoolImpl(_: *anyopaque, index: usize) Error!bool {
+            return switch (index) {
+                0 => true,
+                1 => false,
+                else => Error.NullValue,
+            };
+        }
+
+        fn getStringImpl(_: *anyopaque, index: usize) Error![]const u8 {
+            return switch (index) {
+                0 => "Alice",
+                1 => "Bob",
+                else => Error.NullValue,
+            };
+        }
+    };
+
+    var mock_row = MockDriverRow{};
+
+    var vtable = Row.RowVTable{
+        .isNull = MockDriverRow.isNullImpl,
+        .getInt = MockDriverRow.getIntImpl,
+        .getFloat = MockDriverRow.getFloatImpl,
+        .getBool = MockDriverRow.getBoolImpl,
+        .getString = MockDriverRow.getStringImpl,
+    };
+
+    const row = Row{
+        .driver_row = &mock_row,
+        .vtable = &vtable,
+    };
+
+    // 测试 isNull
+    try testing.expect(!row.isNull(0));
+    try testing.expect(!row.isNull(1));
+    try testing.expect(row.isNull(2));
+
+    // 测试 getInt
+    try testing.expectEqual(@as(i64, 42), try row.getInt(i64, 0));
+    try testing.expectEqual(@as(i32, 100), try row.getInt(i32, 1));
+
+    // 测试 getFloat
+    try testing.expectEqual(@as(f64, 3.14), try row.getFloat(f64, 0));
+    try testing.expectEqual(@as(f32, 2.718), try row.getFloat(f32, 1));
+
+    // 测试 getBool
+    try testing.expectEqual(true, try row.getBool(0));
+    try testing.expectEqual(false, try row.getBool(1));
+
+    // 测试 getString
+    try testing.expectEqualStrings("Alice", try row.getString(0));
+    try testing.expectEqualStrings("Bob", try row.getString(1));
+
+    // 测试 NULL 值访问
+    try testing.expectError(Error.NullValue, row.getInt(i64, 2));
+    try testing.expectError(Error.NullValue, row.getString(2));
 }

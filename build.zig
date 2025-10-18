@@ -110,6 +110,7 @@ pub fn build(b: *std.Build) void {
         "08_relations_belongs_to",
         "09_relations_has_many",
         "10_relations_many_to_many",
+        "11_schema_migrations",
     };
 
     for (all_examples) |name| {

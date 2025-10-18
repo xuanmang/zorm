@@ -107,6 +107,9 @@ pub fn build(b: *std.Build) void {
         "05_delete_operations",
         "06_query_builder",
         "07_transactions",
+        "08_relations_belongs_to",
+        "09_relations_has_many",
+        "10_relations_many_to_many",
     };
 
     for (all_examples) |name| {

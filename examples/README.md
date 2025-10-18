@@ -35,6 +35,11 @@ export ZORM_DB_NAME=mydb
 首次运行前，需要初始化数据库结构:
 
 ```bash
+zig build run-setup
+```
+
+或者使用通用的示例运行命令：
+```bash
 zig build run-example -Dexample=00_setup_database
 ```
 

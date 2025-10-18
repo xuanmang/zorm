@@ -1,94 +1,64 @@
-//! 共享数据模型定义
+//! 博客系统共享模型定义
 //!
-//! 博客系统的核心数据结构
+//! 定义了示例应用使用的所有数据模型：
+//! - User: 用户模型
+//! - Post: 文章模型
+//! - Comment: 评论模型
+//! - Tag: 标签模型
+//! - PostTag: 文章-标签关联模型 (多对多)
+//!
+//! 每个模型都包含 `table_name` 常量，用于 ZORM 的表映射。
 
 const std = @import("std");
 
 /// 用户模型
 pub const User = struct {
-    id: ?i64 = null,
+    id: i64,
     name: []const u8,
     email: []const u8,
-    created_at: ?i64 = null, // Unix timestamp
-    updated_at: ?i64 = null,
+    created_at: i64,
+    updated_at: i64,
 
-    pub const TableName = "users";
-
-    /// 验证用户数据
-    pub fn validate(self: User) !void {
-        if (self.name.len == 0) return error.InvalidName;
-        if (self.email.len == 0) return error.InvalidEmail;
-        if (std.mem.indexOf(u8, self.email, "@") == null) {
-            return error.InvalidEmailFormat;
-        }
-    }
+    pub const table_name = "users";
 };
 
 /// 文章模型
 pub const Post = struct {
-    id: ?i64 = null,
+    id: i64,
     user_id: i64,
     title: []const u8,
-    content: ?[]const u8 = null,
-    status: Status = .draft,
-    published_at: ?i64 = null,
-    created_at: ?i64 = null,
-    updated_at: ?i64 = null,
+    content: []const u8,
+    status: []const u8, // draft, published, archived
+    published_at: ?i64,
+    created_at: i64,
+    updated_at: i64,
 
-    pub const TableName = "posts";
-
-    pub const Status = enum {
-        draft,
-        published,
-        archived,
-
-        pub fn toString(self: Status) []const u8 {
-            return switch (self) {
-                .draft => "draft",
-                .published => "published",
-                .archived => "archived",
-            };
-        }
-    };
-
-    pub fn validate(self: Post) !void {
-        if (self.title.len == 0) return error.InvalidTitle;
-        if (self.title.len > 255) return error.TitleTooLong;
-    }
+    pub const table_name = "posts";
 };
 
 /// 评论模型
 pub const Comment = struct {
-    id: ?i64 = null,
+    id: i64,
     post_id: i64,
     user_id: i64,
     content: []const u8,
-    created_at: ?i64 = null,
+    created_at: i64,
 
-    pub const TableName = "comments";
-
-    pub fn validate(self: Comment) !void {
-        if (self.content.len == 0) return error.EmptyComment;
-    }
+    pub const table_name = "comments";
 };
 
 /// 标签模型
 pub const Tag = struct {
-    id: ?i64 = null,
+    id: i64,
     name: []const u8,
 
-    pub const TableName = "tags";
-
-    pub fn validate(self: Tag) !void {
-        if (self.name.len == 0) return error.EmptyTagName;
-        if (self.name.len > 50) return error.TagNameTooLong;
-    }
+    pub const table_name = "tags";
 };
 
-/// 文章标签关联表
+/// 文章-标签关联模型 (多对多关系)
 pub const PostTag = struct {
     post_id: i64,
     tag_id: i64,
 
-    pub const TableName = "post_tags";
+    pub const table_name = "post_tags";
 };

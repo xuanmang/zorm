@@ -44,6 +44,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    examples_common_module.addImport("zorm", zorm_module);
     examples_common_module.addImport("pg", pg_dep.module("pg"));
 
     // 原有的基础示例程序
@@ -74,6 +75,29 @@ pub fn build(b: *std.Build) void {
     const run_basic_example_step = b.step("run-basic", "Run the basic example");
     run_basic_example_step.dependOn(&run_basic_example.step);
 
+    // 添加数据库初始化步骤
+    const setup_module = b.createModule(.{
+        .root_source_file = b.path("examples/00_setup_database.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    setup_module.addImport("zorm", zorm_module);
+    setup_module.addImport("common/db_config.zig", examples_common_module);
+    setup_module.addImport("common/models.zig", b.createModule(.{
+        .root_source_file = b.path("examples/common/models.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
+
+    const setup_exe = b.addExecutable(.{
+        .name = "setup_database",
+        .root_module = setup_module,
+    });
+
+    const run_setup_cmd = b.addRunArtifact(setup_exe);
+    const run_setup_step = b.step("run-setup", "Initialize database schema and tables");
+    run_setup_step.dependOn(&run_setup_cmd.step);
+
     // 添加运行单个示例的步骤
     const example_name = b.option([]const u8, "example", "示例名称") orelse "00_setup_database";
     const example_path = b.fmt("examples/{s}.zig", .{example_name});
@@ -83,8 +107,14 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    run_example_module.addImport("zorm", zorm_module);
     run_example_module.addImport("pg", pg_dep.module("pg"));
     run_example_module.addImport("common/db_config.zig", examples_common_module);
+    run_example_module.addImport("common/models.zig", b.createModule(.{
+        .root_source_file = b.path("examples/common/models.zig"),
+        .target = target,
+        .optimize = optimize,
+    }));
 
     const run_example = b.addExecutable(.{
         .name = "example",
@@ -122,14 +152,22 @@ pub fn build(b: *std.Build) void {
         "20_aggregation",
     };
 
+    const models_module = b.createModule(.{
+        .root_source_file = b.path("examples/common/models.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     for (all_examples) |name| {
         const exe_module = b.createModule(.{
             .root_source_file = b.path(b.fmt("examples/{s}.zig", .{name})),
             .target = target,
             .optimize = optimize,
         });
+        exe_module.addImport("zorm", zorm_module);
         exe_module.addImport("pg", pg_dep.module("pg"));
         exe_module.addImport("common/db_config.zig", examples_common_module);
+        exe_module.addImport("common/models.zig", models_module);
 
         const exe = b.addExecutable(.{
             .name = name,
@@ -186,6 +224,27 @@ pub fn build(b: *std.Build) void {
 
     // 将 pool 测试添加到主测试步骤
     test_step.dependOn(&run_pool_tests.step);
+
+    // Examples 测试
+    const examples_test_module = b.createModule(.{
+        .root_source_file = b.path("examples/tests/setup_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    examples_test_module.addImport("../common/db_config.zig", examples_common_module);
+    examples_test_module.addImport("../common/models.zig", models_module);
+
+    const examples_tests = b.addTest(.{
+        .root_module = examples_test_module,
+    });
+
+    const run_examples_tests = b.addRunArtifact(examples_tests);
+    const examples_test_step = b.step("test-examples", "Run examples tests");
+    examples_test_step.dependOn(&run_examples_tests.step);
+
+    // 将 examples 测试添加到主测试步骤
+    test_step.dependOn(&run_examples_tests.step);
 
     // PostgreSQL 集成测试
     if (enable_postgres) {

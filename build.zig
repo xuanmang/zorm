@@ -111,6 +111,8 @@ pub fn build(b: *std.Build) void {
         "09_relations_has_many",
         "10_relations_many_to_many",
         "11_schema_migrations",
+        "12_batch_operations",
+        "13_advanced_queries",
     };
 
     for (all_examples) |name| {

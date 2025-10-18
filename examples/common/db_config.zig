@@ -13,6 +13,8 @@ pub const DBConfig = struct {
     user: []const u8,
     password: []const u8,
     dbname: []const u8,
+    /// 可选的默认 schema，null 表示使用 public
+    schema: ?[]const u8 = null,
 
     /// 生成 PostgreSQL DSN 连接字符串
     /// 格式: "host=X port=Y user=Z password=W dbname=D"
@@ -33,6 +35,7 @@ pub const DBConfig = struct {
 /// - User: pguser
 /// - Password: Pg#123!
 /// - Database: postgres
+/// - Schema: null (使用 public)
 pub fn getDefaultConfig() DBConfig {
     return .{
         .host = "127.0.0.1",
@@ -40,7 +43,119 @@ pub fn getDefaultConfig() DBConfig {
         .user = "pguser",
         .password = "Pg#123!",
         .dbname = "postgres",
+        .schema = null, // 默认使用 public schema
     };
+}
+
+/// 获取带自定义 schema 的配置
+///
+/// ## 参数
+/// - schema_name: schema 名称，null 表示使用 public
+///
+/// ## 示例
+/// ```zig
+/// const config = getConfigWithSchema("myapp");
+/// // 将使用 myapp schema
+/// ```
+pub fn getConfigWithSchema(schema_name: ?[]const u8) DBConfig {
+    return .{
+        .host = "127.0.0.1",
+        .port = 5432,
+        .user = "pguser",
+        .password = "Pg#123!",
+        .dbname = "postgres",
+        .schema = schema_name,
+    };
+}
+
+/// 从环境变量读取 schema 配置
+///
+/// 读取 DB_SCHEMA 环境变量。如果未设置，使用 public。
+///
+/// ## 环境变量
+/// - DB_SCHEMA: schema 名称（可选）
+///
+/// ## 示例
+/// ```bash
+/// export DB_SCHEMA=myapp
+/// # 程序将使用 myapp schema
+/// ```
+pub fn getConfigFromEnv() DBConfig {
+    const schema = std.process.getEnvVarOwned(
+        std.heap.page_allocator,
+        "DB_SCHEMA",
+    ) catch null;
+
+    return .{
+        .host = "127.0.0.1",
+        .port = 5432,
+        .user = "pguser",
+        .password = "Pg#123!",
+        .dbname = "postgres",
+        .schema = if (schema) |s| s else null,
+    };
+}
+
+/// 初始化 schema
+///
+/// 创建指定的 schema（如果不存在），并设置 search_path。
+/// 如果 schema 为 null，则使用 public schema。
+///
+/// ## 参数
+/// - db: 数据库连接
+/// - schema_name: schema 名称，null 表示使用 public
+/// - drop_if_exists: 是否先删除已存在的 schema（默认 false）
+///
+/// ## 错误
+/// - error.QueryFailed: SQL 执行失败
+///
+/// ## 示例
+/// ```zig
+/// // 创建并使用 myapp schema
+/// try initSchema(db, "myapp", false);
+///
+/// // 使用 public schema（不做任何操作）
+/// try initSchema(db, null, false);
+///
+/// // 重建 myapp schema（删除旧数据）
+/// try initSchema(db, "myapp", true);
+/// ```
+pub fn initSchema(
+    db: anytype,
+    schema_name: ?[]const u8,
+    drop_if_exists: bool,
+) !void {
+    if (schema_name) |schema| {
+        // 删除旧 schema（如果需要）
+        if (drop_if_exists) {
+            const drop_sql = try std.fmt.allocPrint(
+                std.heap.page_allocator,
+                "DROP SCHEMA IF EXISTS {s} CASCADE",
+                .{schema},
+            );
+            defer std.heap.page_allocator.free(drop_sql);
+            try db.exec(drop_sql, &.{});
+        }
+
+        // 创建 schema
+        const create_sql = try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "CREATE SCHEMA IF NOT EXISTS {s}",
+            .{schema},
+        );
+        defer std.heap.page_allocator.free(create_sql);
+        try db.exec(create_sql, &.{});
+
+        // 设置 search_path
+        const set_path_sql = try std.fmt.allocPrint(
+            std.heap.page_allocator,
+            "SET search_path TO {s}, public",
+            .{schema},
+        );
+        defer std.heap.page_allocator.free(set_path_sql);
+        try db.exec(set_path_sql, &.{});
+    }
+    // 如果 schema_name 为 null，不做任何操作，使用默认的 public schema
 }
 
 /// 创建 PostgreSQL 驱动实例

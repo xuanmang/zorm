@@ -44,6 +44,7 @@ pub const hooks = @import("core/hooks.zig");
 pub const dialect = @import("dialect/dialect.zig");
 pub const sql = @import("dialect/sql.zig");
 pub const query = @import("query/query.zig");
+pub const config = @import("config/db_config.zig");
 pub const schema = struct {
     pub const ColumnType = @import("schema/schema.zig").ColumnType;
     pub const TableMeta = @import("schema/schema.zig").TableMeta;

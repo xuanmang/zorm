@@ -123,19 +123,44 @@ pub fn main() !void {
 
     std.debug.print("=== ZORM 数据库初始化 ===\n\n", .{});
 
+    // ============================================
+    // 配置 Schema
+    // ============================================
+    // 方式1: 使用默认配置（public schema）
+    const config = db_config.getDefaultConfig();
+
+    // 方式2: 使用自定义 schema
+    // const config = db_config.getConfigWithSchema("zorm_examples");
+
+    // 方式3: 从环境变量读取 (export DB_SCHEMA=myapp)
+    // const config = db_config.getConfigFromEnv();
+
+    // 当前使用默认配置 (public schema)
+    const schema_name = config.schema;
+
     // 连接数据库
     std.debug.print("连接到 PostgreSQL...\n", .{});
-    var db = try db_config.createDefaultDBInstance(allocator);
+    var db = try db_config.createDBInstance(allocator, config);
     defer db.deinit();
     std.debug.print("✓ 数据库连接成功\n\n", .{});
 
-    // 清理旧的 zorm_examples schema（如果存在）
-    std.debug.print("清理旧数据...\n", .{});
-    try db.exec("DROP SCHEMA IF EXISTS zorm_examples CASCADE", &.{});
-    std.debug.print("✓ 旧数据清理完成\n\n", .{});
+    // 初始化 Schema
+    if (schema_name) |schema| {
+        std.debug.print("初始化 schema: {s}\n", .{schema});
+        try db_config.initSchema(db, schema_name, true); // true = 删除旧数据重建
+        std.debug.print("✓ Schema '{s}' 初始化完成\n\n", .{schema});
+    } else {
+        std.debug.print("使用默认 public schema\n\n", .{});
+        // 清理旧的 zorm_examples schema（如果存在）
+        try db.exec("DROP SCHEMA IF EXISTS zorm_examples CASCADE", &.{});
+    }
 
-    // 创建表（使用默认的 public schema）
-    std.debug.print("创建数据表（public schema）...\n", .{});
+    // 创建表
+    if (schema_name) |schema| {
+        std.debug.print("创建数据表（{s} schema）...\n", .{schema});
+    } else {
+        std.debug.print("创建数据表（public schema）...\n", .{});
+    }
     try createTables(db);
     std.debug.print("✓ 所有表创建成功\n\n", .{});
 

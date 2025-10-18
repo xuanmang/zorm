@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const db_mod = @import("../core/db.zig");
 const Dialect = @import("../dialect/dialect.zig").Dialect;
 const types = @import("../types.zig");
+const result_scanner = @import("../mapper/result_scanner.zig");
 
 // 重导出类型定义
 pub const WhereClause = types.WhereClause;
@@ -330,6 +331,23 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 执行查询并扫描一条记录
+        ///
+        /// 执行 SQL 查询,期望返回恰好一行结果。
+        /// 使用 field_mapper 自动映射列到结构体字段。
+        ///
+        /// 返回:
+        /// - T: 映射后的结构体实例
+        ///
+        /// 错误:
+        /// - error.NoRows: 结果集为空
+        /// - error.TooManyRows: 返回多于一行
+        /// - error.QueryFailed: 查询执行失败
+        /// - error.TypeMismatch: 类型不匹配
+        ///
+        /// 示例:
+        /// ```zig
+        /// const user = try query.where("id = $1", .{1}).scanOne();
+        /// ```
         pub fn scanOne(self: *Self) !T {
             const query_str = try self.build();
             defer self.allocator.free(query_str);
@@ -342,22 +360,56 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 try all_args.appendSlice(self.allocator, clause.args);
             }
 
-            const result = try self.db.query(query_str, all_args.items);
-            defer result.close();
+            // 执行查询
+            var rows = try self.db.query(query_str, all_args.items);
+            defer rows.deinit(self.allocator);
 
-            if (!(try result.next())) {
-                return error.NoRows;
-            }
-
-            // TODO: 实现完整的扫描逻辑 (Story 010)
-            return error.ScanError;
+            // 使用 result_scanner 扫描单行
+            return result_scanner.scanOne(T, &rows, self.allocator);
         }
 
         /// 执行查询并扫描多条记录
+        ///
+        /// 执行 SQL 查询,返回所有结果行映射到的结构体数组。
+        /// 使用 field_mapper 自动映射列到结构体字段。
+        ///
+        /// 返回:
+        /// - []T: 映射后的结构体切片 (调用者负责释放)
+        ///
+        /// 错误:
+        /// - error.QueryFailed: 查询执行失败
+        /// - error.TypeMismatch: 类型不匹配
+        /// - error.OutOfMemory: 内存不足
+        ///
+        /// 示例:
+        /// ```zig
+        /// const users = try query.where("age > $1", .{18}).scan();
+        /// defer self.allocator.free(users);
+        /// ```
         pub fn scan(self: *Self) ![]T {
-            _ = self;
-            // TODO: 实现完整的扫描逻辑 (Story 010)
-            return error.ScanError;
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            for (self.where_clauses.items) |clause| {
+                try all_args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 执行查询
+            var rows = try self.db.query(query_str, all_args.items);
+            defer rows.deinit(self.allocator);
+
+            // 使用 ArrayList 收集结果
+            var results = std.ArrayList(T){};
+            errdefer results.deinit(self.allocator);
+
+            // 使用 result_scanner 扫描所有行
+            try result_scanner.scanAll(T, &rows, self.allocator, &results);
+
+            return results.toOwnedSlice(self.allocator);
         }
     };
 }

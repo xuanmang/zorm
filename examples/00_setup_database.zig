@@ -129,14 +129,13 @@ pub fn main() !void {
     defer db.deinit();
     std.debug.print("✓ 数据库连接成功\n\n", .{});
 
-    // 创建 schema
-    std.debug.print("创建 schema...\n", .{});
-    try db.exec("CREATE SCHEMA IF NOT EXISTS zorm_examples", &.{});
-    try db.exec("SET search_path TO zorm_examples", &.{});
-    std.debug.print("✓ Schema 创建成功\n\n", .{});
+    // 清理旧的 zorm_examples schema（如果存在）
+    std.debug.print("清理旧数据...\n", .{});
+    try db.exec("DROP SCHEMA IF EXISTS zorm_examples CASCADE", &.{});
+    std.debug.print("✓ 旧数据清理完成\n\n", .{});
 
-    // 创建表
-    std.debug.print("创建数据表...\n", .{});
+    // 创建表（使用默认的 public schema）
+    std.debug.print("创建数据表（public schema）...\n", .{});
     try createTables(db);
     std.debug.print("✓ 所有表创建成功\n\n", .{});
 

@@ -1,94 +1,88 @@
-schema: 1
-story: '006'
-story_title: '实现连接池管理'
-gate: PASS
-status_reason: '完整实现线程安全连接池,编译时泛型特化,生命周期管理完善,11个测试全部通过(8单元+3并发),内存安全模式优秀,代码质量高'
-reviewer: 'James 💻 (Full Stack Developer)'
-updated: '2025-10-17T12:45:00Z'
+# Quality Gate Decision
+# Story 006: 实现连接池管理
 
-top_issues: []
+schema: 1
+story: "006"
+story_title: "实现连接池管理"
+gate: PASS
+status_reason: "连接池实现质量优秀,关键索引更新逻辑bug已修复,所有测试通过"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-10-17T08:00:00Z"
+
 waiver: { active: false }
 
-quality_score: 96
-expires: '2025-10-31T12:45:00Z'
+top_issues:
+  - id: "LOGIC-001"
+    severity: medium
+    finding: "closeConnectionAtIndex 方法中的 available_indices 更新逻辑存在潜在bug"
+    location: "src/driver/pool.zig:297-321"
+    fixed: true
+    fixed_date: "2025-10-17T08:00:00Z"
+    details: |
+      当 swapRemove 删除一个索引后,代码使用 break 跳出循环,可能导致后续需要更新的索引未被处理。
 
+      场景示例:
+      - pool_metadata = [A, B, C, D, E] (索引 0-4)
+      - available_indices = [1, 4]
+      - closeConnectionAtIndex(1) 执行后:
+        - pool_metadata.swapRemove(1) → [A, E, C, D] (E移到索引1)
+        - available_indices 期望: [1] (索引4→索引1)
+        - available_indices 实际: [4] (bug,未更新)
+
+      **修复方案:**
+      改用 while 循环完整遍历所有索引,在 swapRemove 删除连接前记录 old_last_idx,
+      然后更新所有指向 old_last_idx 的索引为 index,确保索引一致性。
+    suggested_action: "重构索引更新逻辑,确保完整遍历并更新所有受影响的索引"
+    suggested_owner: "dev"
+
+  - id: "FEATURE-001"
+    severity: low
+    finding: "acquire_timeout_ms 配置参数已定义但未实现"
+    location: "src/driver/pool.zig:29, 143"
+    suggested_action: "实现超时逻辑、移除参数或在文档中标注未实现"
+    suggested_owner: "dev"
+
+  - id: "PERF-001"
+    severity: low
+    finding: "countIdleConnections 性能可优化"
+    location: "src/driver/pool.zig:351-359"
+    suggested_action: "添加 idle_count 字段维护计数器,优化为 O(1) 复杂度"
+    suggested_owner: "dev"
+
+# Evidence
 evidence:
   tests_reviewed: 11
-  risks_identified: 0
+  tests_passed: 11
+  risks_identified: 1
   trace:
     ac_covered: [1, 2, 3, 4, 5, 6, 7]
     ac_gaps: []
 
+# NFR Validation
 nfr_validation:
   security:
     status: PASS
-    notes: 'Mutex保护所有共享状态;defer确保锁释放无死锁;显式内存管理无泄漏风险;错误处理强制!T'
+    notes: "线程安全实现正确"
   performance:
-    status: PASS
-    notes: 'comptime泛型编译时特化零开销;swapRemove保持O(1)删除;连接复用减少创建开销;空闲连接限制防止资源浪费'
+    status: CONCERNS
+    notes: "countIdleConnections 可优化(低优先级)"
   reliability:
     status: PASS
-    notes: '11个测试覆盖全部场景;并发测试验证线程安全;压力测试20线程×100次;连接生命周期自动管理;Mock Driver验证设计'
+    notes: "索引更新逻辑bug已修复,所有测试通过"
   maintainability:
     status: PASS
-    notes: '代码结构清晰433行;文档完整245行Dev Record;7个技术挑战详细记录;测试覆盖426行;API设计简洁直观'
+    notes: "代码质量良好,文档完整"
 
+# Quality Score
+quality_score: 88
+
+# Recommendations
 recommendations:
-  immediate: []
+  immediate:
+    - action: "✅ 已完成: closeConnectionAtIndex 索引更新逻辑已修复"
+      refs: ["src/driver/pool.zig:297-321"]
   future:
-    - action: '考虑添加连接健康检查 ping() 方法,在 acquire 时验证连接可用性'
-      refs: ['src/driver/pool.zig:143-189']
-    - action: '考虑实现获取连接超时机制 (acquire_timeout_ms 配置项)'
-      refs: ['src/driver/pool.zig:143-189', 'src/driver/pool.zig:27-29']
-    - action: '考虑添加连接池指标监控 (获取/释放次数、等待时间、错误率)'
-      refs: ['src/driver/pool.zig:394-412']
-    - action: '考虑添加后台清理线程自动定期清理过期连接'
-      refs: ['src/driver/pool.zig:367-389']
-
-code_quality_metrics:
-  lines_of_code:
-    implementation: 433
-    tests: 426
-    documentation: 245
-  test_coverage:
-    unit_tests: 8
-    concurrent_tests: 3
-    stress_tests: 1
-    total_assertions: '30+'
-  compilation:
-    zig_version: '0.15.2'
-    warnings: 0
-    errors: 0
-    format_check: PASS
-
-technical_highlights:
-  - 'Zig 0.15.2 API 兼容性完美适配 (std.array_list.Managed)'
-  - '时间戳类型正确使用 i128 匹配 nanoTimestamp()'
-  - '内存安全 deinit 顺序正确 (先解锁后销毁)'
-  - '线程安全 Mutex + defer 模式无死锁风险'
-  - '并发测试覆盖 10-20 线程压力场景'
-  - 'Mock Driver 完整实现支持测试驱动开发'
-  - '技术文档详细记录 7 个挑战和解决方案'
-
-acceptance_criteria_verification:
-  AC1_Pool_Generic:
-    status: PASS
-    evidence: 'src/driver/pool.zig:72-413 实现 Pool(comptime Driver: type)'
-  AC2_Config_MaxConns:
-    status: PASS
-    evidence: 'src/driver/pool.zig:12-30 PoolConfig 支持 max_open_conns/max_idle_conns'
-  AC3_Acquire_Release:
-    status: PASS
-    evidence: 'src/driver/pool.zig:143-230 实现 acquire() 和 release()'
-  AC4_Lifecycle_Timeout:
-    status: PASS
-    evidence: 'src/driver/pool.zig:325-343 isConnectionExpired 实现生命周期管理'
-  AC5_Thread_Safe:
-    status: PASS
-    evidence: 'src/driver/pool.zig:87 Mutex;tests/pool_test.zig:270-425 并发测试'
-  AC6_Pool_Exhausted:
-    status: PASS
-    evidence: 'src/driver/pool.zig:169-171 返回 ConnectionPoolExhausted 错误'
-  AC7_Concurrent_Tests:
-    status: PASS
-    evidence: 'tests/pool_test.zig:270-425 三个并发测试全部通过'
+    - action: "决定 acquire_timeout_ms 最终方案"
+      refs: ["src/driver/pool.zig:29"]
+    - action: "优化 countIdleConnections 性能 (可选)"
+      refs: ["src/driver/pool.zig:351-359"]

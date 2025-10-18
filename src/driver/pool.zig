@@ -294,17 +294,30 @@ pub fn Pool(comptime Driver: type) type {
             // 释放连接内存
             self.allocator.destroy(conn);
 
+            // 记录 swapRemove 前 pool_metadata 的最后一个索引
+            // swapRemove 会将最后一个元素移到 index 位置
+            const old_last_idx = self.pool_metadata.items.len - 1;
+
             // 从池中移除 (使用 swapRemove 保持 O(1) 复杂度)
             _ = self.pool_metadata.swapRemove(index);
 
-            // 更新 available_indices (移除对应索引)
-            for (self.available_indices.items, 0..) |idx, i| {
+            // 更新 available_indices
+            // 需要做两件事:
+            // 1. 移除值为 index 的项 (被删除的连接)
+            // 2. 将值为 old_last_idx 的项更新为 index (swapRemove 导致移动)
+            var i: usize = 0;
+            while (i < self.available_indices.items.len) {
+                const idx = self.available_indices.items[i];
                 if (idx == index) {
+                    // 移除被删除的连接索引
                     _ = self.available_indices.swapRemove(i);
-                    break;
-                } else if (idx == self.pool_metadata.items.len) {
-                    // swapRemove 导致最后一个元素移动到了 index 位置
-                    self.available_indices.items[i] = index;
+                    // 不递增 i，因为 swapRemove 会把后面的元素移过来
+                } else {
+                    if (idx == old_last_idx) {
+                        // 更新被 swapRemove 移动的连接索引
+                        self.available_indices.items[i] = index;
+                    }
+                    i += 1;
                 }
             }
 

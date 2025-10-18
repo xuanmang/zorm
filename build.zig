@@ -105,6 +105,8 @@ pub fn build(b: *std.Build) void {
         "03_insert_operations",
         "04_update_operations",
         "05_delete_operations",
+        "06_query_builder",
+        "07_transactions",
     };
 
     for (all_examples) |name| {

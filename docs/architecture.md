@@ -204,6 +204,109 @@ const field_count = comptime @typeInfo(User).Struct.fields.len; // 编译时已�
 
 ---
 
+## ⚠️ Zig 0.15.2 重要 API 变化
+
+### std.ArrayList 的正确用法
+
+**在 Zig 0.15.2 中,`std.ArrayList` 默认返回 unmanaged 版本,API 发生了显著变化**
+
+#### ❌ 错误用法 (Zig 0.14.x 及更早版本)
+
+```zig
+// ❌ 在 Zig 0.15.2 中不再有效!
+var list = std.ArrayList(T).init(allocator);  // 错误: init() 方法不存在
+defer list.deinit();                          // 错误: deinit() 缺少参数
+try list.append(item);                         // 错误: append() 缺少参数
+const slice = list.toOwnedSlice();            // 错误: toOwnedSlice() 缺少参数
+```
+
+#### ✅ 正确用法 (Zig 0.15.2+)
+
+```zig
+// ✅ 使用结构体字面量初始化 (unmanaged ArrayList)
+var list: std.ArrayList(T) = .{};
+defer list.deinit(allocator);                  // 必须传递 allocator
+try list.append(allocator, item);              // 必须传递 allocator
+const slice = try list.toOwnedSlice(allocator); // 必须传递 allocator
+```
+
+#### 完整示例对比
+
+```zig
+// ===== Zig 0.14.x 及更早版本 =====
+// ❌ 以下代码在 Zig 0.15.2 中会编译失败
+pub fn oldWay(allocator: Allocator) !void {
+    var connections = std.ArrayList(*Conn).init(allocator);
+    defer connections.deinit();
+
+    try connections.append(conn1);
+    try connections.append(conn2);
+
+    const items = connections.toOwnedSlice();
+    defer allocator.free(items);
+}
+
+// ===== Zig 0.15.2+ =====
+// ✅ 正确的实现方式
+pub fn newWay(allocator: Allocator) !void {
+    var connections: std.ArrayList(*Conn) = .{};  // 结构体字面量
+    defer connections.deinit(allocator);           // 传递 allocator
+
+    try connections.append(allocator, conn1);      // 传递 allocator
+    try connections.append(allocator, conn2);      // 传递 allocator
+
+    const items = try connections.toOwnedSlice(allocator);  // 传递 allocator
+    defer allocator.free(items);
+}
+```
+
+#### ArrayList(u8).writer() 的用法变化
+
+```zig
+// ❌ 错误 (Zig 0.14.x 风格)
+var buf = std.ArrayList(u8).init(allocator);
+defer buf.deinit();
+const writer = buf.writer();  // 错误: writer() 缺少参数
+
+// ✅ 正确 (Zig 0.15.2+)
+var buf: std.ArrayList(u8) = .{};
+defer buf.deinit(allocator);
+const writer = buf.writer(allocator);  // 必须传递 allocator
+```
+
+#### 常用方法的 Allocator 参数
+
+所有 unmanaged ArrayList 的内存管理方法都需要显式传递 allocator:
+
+| 方法 | Zig 0.14.x | Zig 0.15.2+ |
+|------|-----------|-------------|
+| 初始化 | `.init(allocator)` | `: T = .{}` |
+| 释放 | `.deinit()` | `.deinit(allocator)` |
+| 添加元素 | `.append(item)` | `.append(allocator, item)` |
+| 批量添加 | `.appendSlice(items)` | `.appendSlice(allocator, items)` |
+| 转移所有权 | `.toOwnedSlice()` | `.toOwnedSlice(allocator)` |
+| 获取 writer | `.writer()` | `.writer(allocator)` |
+
+#### 关键要点
+
+1. **初始化**: 使用 `var list: std.ArrayList(T) = .{}` 而不是 `.init(allocator)`
+2. **Allocator 参数**: 所有方法都需要显式传递 allocator
+3. **结构体字面量**: `.{}` 是 Zig 的结构体默认初始化语法
+4. **向后不兼容**: Zig 0.14.x 的代码在 0.15.2 中**不会编译通过**
+
+#### 迁移检查清单
+
+在将代码迁移到 Zig 0.15.2 时,请检查所有 ArrayList 使用:
+
+- [ ] 将 `ArrayList(T).init(allocator)` 改为 `ArrayList(T) = .{}`
+- [ ] 为 `deinit()` 添加 allocator 参数
+- [ ] 为 `append()` 添加 allocator 参数
+- [ ] 为 `toOwnedSlice()` 添加 allocator 参数
+- [ ] 为 `writer()` 添加 allocator 参数
+- [ ] 检查所有其他 ArrayList 方法调用
+
+---
+
 ## 模块架构
 
 ### 分层架构
@@ -313,8 +416,8 @@ pub fn Pool(comptime Driver: type) type {
             const pool = try allocator.create(Self);
             pool.* = .{
                 .allocator = allocator,
-                .connections = std.ArrayList(*Conn).init(allocator),
-                .available = std.ArrayList(*Conn).init(allocator),
+                .connections = .{},  // ✅ Zig 0.15.2: 使用结构体字面量
+                .available = .{},    // ✅ Zig 0.15.2: 使用结构体字面量
                 .mutex = .{},
                 .config = config,
             };
@@ -331,7 +434,7 @@ pub fn Pool(comptime Driver: type) type {
 
             if (self.connections.items.len < self.config.max_open_conns) {
                 const conn = try self.createConnection();
-                try self.connections.append(conn);
+                try self.connections.append(self.allocator, conn);  // ✅ Zig 0.15.2: 传递 allocator
                 return conn;
             }
 
@@ -342,7 +445,7 @@ pub fn Pool(comptime Driver: type) type {
             self.mutex.lock();
             defer self.mutex.unlock();
 
-            try self.available.append(conn);
+            try self.available.append(self.allocator, conn);  // ✅ Zig 0.15.2: 传递 allocator
         }
 
         fn createConnection(self: *Self) !*Conn {
@@ -357,8 +460,8 @@ pub fn Pool(comptime Driver: type) type {
                 conn.close() catch {};
                 self.allocator.destroy(conn);
             }
-            self.connections.deinit();
-            self.available.deinit();
+            self.connections.deinit(self.allocator);  // ✅ Zig 0.15.2: 传递 allocator
+            self.available.deinit(self.allocator);    // ✅ Zig 0.15.2: 传递 allocator
             self.allocator.destroy(self);
         }
     };
@@ -409,11 +512,11 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 .base_allocator = allocator,
                 .db = db,
                 .selected_columns = null,
-                .where_clauses = std.ArrayList(WhereClause).init(allocator),
-                .join_clauses = std.ArrayList(JoinClause).init(allocator),
-                .order_by_clauses = std.ArrayList(OrderByClause).init(allocator),
-                .group_by_columns = std.ArrayList([]const u8).init(allocator),
-                .having_clauses = std.ArrayList(HavingClause).init(allocator),
+                .where_clauses = .{},     // ✅ Zig 0.15.2: 使用结构体字面量
+                .join_clauses = .{},      // ✅ Zig 0.15.2: 使用结构体字面量
+                .order_by_clauses = .{},  // ✅ Zig 0.15.2: 使用结构体字面量
+                .group_by_columns = .{},  // ✅ Zig 0.15.2: 使用结构体字面量
+                .having_clauses = .{},    // ✅ Zig 0.15.2: 使用结构体字面量
                 .limit_value = null,
                 .offset_value = null,
                 .distinct = false,
@@ -422,11 +525,11 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         pub fn deinit(self: *Self) void {
-            self.where_clauses.deinit();
-            self.join_clauses.deinit();
-            self.order_by_clauses.deinit();
-            self.group_by_columns.deinit();
-            self.having_clauses.deinit();
+            self.where_clauses.deinit(self.base_allocator);     // ✅ Zig 0.15.2: 传递 allocator
+            self.join_clauses.deinit(self.base_allocator);      // ✅ Zig 0.15.2: 传递 allocator
+            self.order_by_clauses.deinit(self.base_allocator);  // ✅ Zig 0.15.2: 传递 allocator
+            self.group_by_columns.deinit(self.base_allocator);  // ✅ Zig 0.15.2: 传递 allocator
+            self.having_clauses.deinit(self.base_allocator);    // ✅ Zig 0.15.2: 传递 allocator
             self.arena.deinit();
             self.base_allocator.destroy(self);
         }
@@ -435,13 +538,13 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         pub fn column(self: *Self, col: []const u8) !*Self {
             const allocator = self.arena.allocator();
             if (self.selected_columns == null) {
-                var cols = std.ArrayList([]const u8).init(allocator);
-                try cols.append(try allocator.dupe(u8, col));
-                self.selected_columns = try cols.toOwnedSlice();
+                var cols: std.ArrayList([]const u8) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
+                try cols.append(allocator, try allocator.dupe(u8, col));  // ✅ 传递 allocator
+                self.selected_columns = try cols.toOwnedSlice(allocator);  // ✅ 传递 allocator
             } else {
                 var cols = std.ArrayList([]const u8).fromOwnedSlice(allocator, @constCast(self.selected_columns.?));
-                try cols.append(try allocator.dupe(u8, col));
-                self.selected_columns = try cols.toOwnedSlice();
+                try cols.append(allocator, try allocator.dupe(u8, col));  // ✅ 传递 allocator
+                self.selected_columns = try cols.toOwnedSlice(allocator);  // ✅ 传递 allocator
             }
             return self;
         }
@@ -460,7 +563,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 .args = try allocArgs(allocator, args),
                 .operator = .and_op,
             };
-            try self.where_clauses.append(where_clause);
+            try self.where_clauses.append(self.base_allocator, where_clause);  // ✅ Zig 0.15.2: 传递 allocator
             return self;
         }
 
@@ -472,7 +575,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 .args = try allocArgs(allocator, args),
                 .operator = .or_op,
             };
-            try self.where_clauses.append(where_clause);
+            try self.where_clauses.append(self.base_allocator, where_clause);  // ✅ Zig 0.15.2: 传递 allocator
             return self;
         }
 
@@ -484,7 +587,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 .table = try allocator.dupe(u8, table),
                 .condition = try allocator.dupe(u8, condition),
             };
-            try self.join_clauses.append(join_clause);
+            try self.join_clauses.append(self.base_allocator, join_clause);  // ✅ Zig 0.15.2: 传递 allocator
             return self;
         }
 
@@ -495,7 +598,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 .column = try allocator.dupe(u8, col),
                 .direction = direction,
             };
-            try self.order_by_clauses.append(order_clause);
+            try self.order_by_clauses.append(self.base_allocator, order_clause);  // ✅ Zig 0.15.2: 传递 allocator
             return self;
         }
 
@@ -520,8 +623,8 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// 构建 SQL 字符串 (运行时)
         pub fn buildSQL(self: *Self) ![]const u8 {
             const allocator = self.arena.allocator();
-            var sql = std.ArrayList(u8).init(allocator);
-            const writer = sql.writer();
+            var sql: std.ArrayList(u8) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
+            const writer = sql.writer(allocator);  // ✅ Zig 0.15.2: 传递 allocator
 
             // SELECT [DISTINCT] columns
             try writer.writeAll("SELECT ");
@@ -604,11 +707,11 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 try writer.print(" OFFSET {d}", .{offset_val});
             }
 
-            return sql.toOwnedSlice();
+            return sql.toOwnedSlice(allocator);  // ✅ Zig 0.15.2: 传递 allocator
         }
 
         /// 执行查询并扫描结果到 ArrayList(T)
-        pub fn scan(self: *Self, dest: *std.ArrayList(T)) !void {
+        pub fn scan(self: *Self, allocator: Allocator, dest: *std.ArrayList(T)) !void {
             const sql = try self.buildSQL();
             const args = try self.collectArgs();
 
@@ -616,8 +719,8 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             defer rows.deinit();
 
             while (try rows.next()) |row| {
-                const item = try scanRow(T, row, dest.allocator);
-                try dest.append(item);
+                const item = try scanRow(T, row, allocator);
+                try dest.append(allocator, item);  // ✅ Zig 0.15.2: 传递 allocator
             }
         }
 
@@ -639,17 +742,18 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 收集所有参数
         fn collectArgs(self: *Self) ![]const QueryArg {
-            var args = std.ArrayList(QueryArg).init(self.arena.allocator());
+            const allocator = self.arena.allocator();
+            var args: std.ArrayList(QueryArg) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
 
             for (self.where_clauses.items) |where_clause| {
-                try args.appendSlice(where_clause.args);
+                try args.appendSlice(allocator, where_clause.args);  // ✅ 传递 allocator
             }
 
             for (self.having_clauses.items) |having_clause| {
-                try args.appendSlice(having_clause.args);
+                try args.appendSlice(allocator, having_clause.args);  // ✅ 传递 allocator
             }
 
-            return args.toOwnedSlice();
+            return args.toOwnedSlice(allocator);  // ✅ 传递 allocator
         }
     };
 }
@@ -996,8 +1100,8 @@ pub fn example(db: *DB(.postgres)) !void {
 ┌────────────────────────────────────────────────────────────────┐
 │           阶段 6: 运行时结果映射 (使用编译时生成的映射器)          │
 │                                                                  │
-│  var users = std.ArrayList(User).init(allocator);                │
-│  try query.scan(&users);                                         │
+│  var users: std.ArrayList(User) = .{};  // ✅ Zig 0.15.2        │
+│  try query.scan(allocator, &users);                              │
 │                                                                  │
 │  [编译时生成的映射逻辑]                                            │
 │  - scanRow(User, row) 函数已在编译时生成                         │
@@ -1097,7 +1201,7 @@ defer rows.deinit();
 while (try rows.next()) |row| {
     // 但是! 这里调用的是编译时生成的 scanRow 函数
     const user = try scanRow(User, row, allocator);
-    try users.append(user);
+    try users.append(allocator, user);  // ✅ Zig 0.15.2: 传递 allocator
 }
 ```
 
@@ -1187,11 +1291,11 @@ pub const SelectQuery = struct {
 
 ```zig
 // 调用者创建 ArrayList 并管理其内存
-var users = std.ArrayList(User).init(caller_allocator);
-defer users.deinit();
+var users: std.ArrayList(User) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
+defer users.deinit(caller_allocator);   // ✅ Zig 0.15.2: 传递 allocator
 
 // ZORM 将结果写入调用者提供的容器
-try query.scan(&users);
+try query.scan(caller_allocator, &users);
 
 // 字符串内存策略
 pub const ScanOptions = struct {
@@ -1434,8 +1538,9 @@ const placeholders = comptime blk: {
 ```zig
 // 批量插入优化为单个 SQL 语句
 pub fn insertMany(self: *InsertQuery, values: []const T) !void {
-    var sql = std.ArrayList(u8).init(self.arena.allocator());
-    const writer = sql.writer();
+    const allocator = self.arena.allocator();
+    var sql: std.ArrayList(u8) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
+    const writer = sql.writer(allocator);  // ✅ Zig 0.15.2: 传递 allocator
 
     try writer.print("INSERT INTO {s} ({s}) VALUES ", .{
         table_name,
@@ -1468,7 +1573,7 @@ pub fn where(self: *SelectQuery, condition: []const u8, args: anytype) !*SelectQ
     const cond_copy = try allocator.dupe(u8, condition);
     const args_copy = try allocArgs(allocator, args);
 
-    try self.where_clauses.append(.{
+    try self.where_clauses.append(self.base_allocator, .{  // ✅ Zig 0.15.2: 传递 allocator
         .condition = cond_copy,
         .args = args_copy,
     });
@@ -1698,8 +1803,9 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         pub fn buildSQL(self: *Self) ![]const u8 {
-            var sql = std.ArrayList(u8).init(self.arena.allocator());
-            const writer = sql.writer();
+            const allocator = self.arena.allocator();
+            var sql: std.ArrayList(u8) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
+            const writer = sql.writer(allocator);  // ✅ Zig 0.15.2: 传递 allocator
 
             try writer.print("INSERT INTO {s} (...) VALUES (...)", .{table_name});
 
@@ -1714,7 +1820,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 }
             }
 
-            return sql.toOwnedSlice();
+            return sql.toOwnedSlice(allocator);  // ✅ Zig 0.15.2: 传递 allocator
         }
     };
 }
@@ -2240,10 +2346,10 @@ pub fn main() !void {
         const sql = try query.buildSQL();
         std.debug.print("SQL: {s}\n", .{sql});
 
-        var users = std.ArrayList(User).init(allocator);
-        defer users.deinit();
+        var users: std.ArrayList(User) = .{};  // ✅ Zig 0.15.2: 使用结构体字面量
+        defer users.deinit(allocator);         // ✅ Zig 0.15.2: 传递 allocator
 
-        try query.scan(&users);
+        try query.scan(allocator, &users);
 
         for (users.items) |user| {
             std.debug.print("User: id={}, name={s}, email={s}\n", .{

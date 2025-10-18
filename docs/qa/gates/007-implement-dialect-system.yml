@@ -1,0 +1,140 @@
+# Quality Gate Decision  
+# Story 007: 实现方言系统和特性检测
+
+schema: 1
+story: "007"
+story_title: "实现方言系统和特性检测"
+gate: PASS
+status_reason: "comptime 方言系统实现优秀,limitClause 内存安全问题已修复,所有测试通过"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-10-17T08:00:00Z"
+
+waiver: { active: false }
+
+top_issues:
+  - id: "MEM-001"
+    severity: high
+    finding: "limitClause() 函数返回指向栈内存的悬空指针"
+    location: "src/dialect/dialect.zig:108-130"
+    fixed: true
+    fixed_date: "2025-10-17T08:00:00Z"
+    details: |
+      limitClause() 函数存在严重的内存安全问题:
+
+      1. limit 和 offset 不是 comptime 参数,可以在运行时调用
+      2. buf 是栈上局部数组,函数返回后失效
+      3. 返回 str 切片指向 buf,造成悬空指针
+
+      原始代码:
+      ```zig
+      var buf: [64]u8 = undefined;
+      var str: []const u8 = "";
+      str = std.fmt.bufPrint(&buf, " LIMIT {d}", .{l}) catch unreachable;
+      break :blk str[0..str.len].*;  // 悬空指针!
+      ```
+
+      **修复方案:**
+      采用选项1,将 limit 和 offset 参数标记为 comptime,使用 comptimePrint 生成编译时字符串:
+      ```zig
+      pub fn limitClause(comptime self: Dialect, comptime limit: ?usize, comptime offset: ?usize) []const u8 {
+          return comptime switch (self) {
+              .postgresql, .mysql, .sqlite => blk: {
+                  if (limit) |l| {
+                      if (offset) |o| {
+                          break :blk std.fmt.comptimePrint(" LIMIT {d} OFFSET {d}", .{ l, o });
+                      } else {
+                          break :blk std.fmt.comptimePrint(" LIMIT {d}", .{l});
+                      }
+                  }
+                  // ...
+              },
+          };
+      }
+      ```
+
+      添加了完整的 `test "limitClause comptime safety"` 验证所有场景。
+    suggested_action: |
+      选项1: 将 limit 和 offset 标记为 comptime
+      ```zig
+      pub fn limitClause(comptime self: Dialect, comptime limit: ?usize, comptime offset: ?usize) []const u8
+      ```
+
+      选项2: 接受 allocator 并分配内存
+      ```zig
+      pub fn limitClauseAlloc(self: Dialect, allocator: Allocator, limit: ?usize, offset: ?usize) ![]const u8
+      ```
+
+      选项3: 移除此函数,由查询构建器动态生成
+    suggested_owner: "dev"
+
+  - id: "API-001"
+    severity: medium
+    finding: "placeholder() 和 placeholderAlloc() API 设计混乱"
+    location: "src/dialect/dialect.zig:22-36"
+    details: |
+      两个占位符函数设计不一致:
+      
+      - placeholder(comptime index): 只能 comptime 使用
+      - placeholderAlloc(allocator, index): 运行时使用,但需要手动释放
+      
+      问题:
+      1. MySQL/SQLite 的 placeholderAlloc 返回静态 "?",不需释放但仍返回 ![]const u8
+      2. PostgreSQL 需要释放,但调用者容易忘记
+      3. 使用场景不清晰,容易误用
+    suggested_action: |
+      统一 API 设计:
+      1. 明确文档说明 placeholderAlloc 的内存管理语义
+      2. 考虑返回 union 类型区分静态/动态字符串
+      3. 或提供 placeholderFree() 配对函数
+    suggested_owner: "dev"
+
+  - id: "TEST-001"
+    severity: low
+    finding: "部分函数缺少测试覆盖"
+    location: "src/dialect/dialect.zig"
+    details: |
+      以下函数没有测试:
+      - limitClause() (虽然有内存问题,但应该有测试发现)
+      - autoIncrementClause()
+      - currentTimestamp()
+      - placeholderAlloc()
+    suggested_action: "补充测试用例,特别是 placeholderAlloc 的内存管理测试"
+    suggested_owner: "dev"
+
+# Evidence
+evidence:
+  tests_reviewed: 11
+  tests_passed: 11
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6]
+    ac_gaps: []
+
+# NFR Validation
+nfr_validation:
+  security:
+    status: PASS
+    notes: "limitClause 内存安全问题已修复,强制 comptime 调用"
+  performance:
+    status: PASS
+    notes: "完美的 comptime 实现,零运行时开销"
+  reliability:
+    status: PASS
+    notes: "limitClause comptime 强制保证内存安全,所有测试通过"
+  maintainability:
+    status: PASS
+    notes: "代码结构清晰,注释完整"
+
+# Quality Score
+quality_score: 90
+
+# Recommendations
+recommendations:
+  immediate:
+    - action: "✅ 已完成: limitClause 内存安全问题已修复"
+      refs: ["src/dialect/dialect.zig:108-130"]
+  future:
+    - action: "改进 placeholder API 设计 (可选)"
+      refs: ["src/dialect/dialect.zig:22-36"]
+    - action: "补充测试覆盖 (autoIncrementClause, currentTimestamp, placeholderAlloc)"
+      refs: ["src/dialect/dialect.zig"]

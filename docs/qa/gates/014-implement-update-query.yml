@@ -1,0 +1,61 @@
+# Quality Gate Decision for Story 014
+schema: 1
+story: "014"
+story_title: "实现 UPDATE 查询构建器"
+gate: "PASS"
+status_reason: "完整实现了 UPDATE 查询构建器,支持多字段更新、WHERE 条件、RETURNING 等功能,代码质量优秀"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-01-17T11:20:00Z"
+
+waiver: { active: false }
+
+top_issues: []
+
+evidence:
+  tests_reviewed: 7
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "参数化查询防止 SQL 注入,强制 WHERE 条件最佳实践"
+  performance:
+    status: PASS
+    notes: "批量 SET 子句支持"
+  reliability:
+    status: PASS
+    notes: "完整内存管理,无内存泄漏"
+  maintainability:
+    status: PASS
+    notes: "清晰的链式 API"
+
+quality_score: 95
+
+test_coverage:
+  total_tests: 7
+  tests_passed: 7
+  coverage_areas:
+    - "基本 UPDATE (PostgreSQL/MySQL)"
+    - "多个 SET 子句"
+    - "UPDATE with WHERE"
+    - "Multiple WHERE (AND/OR)"
+    - "UPDATE with RETURNING (PostgreSQL)"
+    - "完整复杂 UPDATE"
+
+code_quality:
+  strengths:
+    - "类型安全的 SET 子句"
+    - "WHERE 条件支持"
+    - "RETURNING 子句 (PostgreSQL/SQLite)"
+    - "正确的参数顺序 (SET + WHERE)"
+    - "方言特定的占位符"
+
+recommendations:
+  future:
+    - action: "考虑添加 UPDATE...FROM 支持 (PostgreSQL)"
+      refs: ["src/query/query.zig:714-924"]
+    - action: "添加无 WHERE 条件的警告机制"
+      refs: ["src/query/query.zig:875-886"]

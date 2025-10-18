@@ -180,7 +180,7 @@ pub const PostgresDriver = struct {
             .result = result,
             .allocator = self.allocator,
             .postgres_row = null, // 延迟创建
-            .row_vtable = null,   // 延迟创建
+            .row_vtable = null, // 延迟创建
         };
 
         // 创建 Rows VTable（只创建一次）

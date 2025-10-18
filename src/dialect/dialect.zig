@@ -95,26 +95,36 @@ pub const Dialect = enum {
     }
 
     /// 获取 LIMIT 语法 (编译时)
-    pub fn limitClause(comptime self: Dialect, limit: ?usize, offset: ?usize) []const u8 {
+    ///
+    /// 注意: limit 和 offset 必须是 comptime 已知的值。
+    /// 对于运行时 LIMIT/OFFSET,应由查询构建器动态生成 SQL。
+    ///
+    /// 示例:
+    /// ```zig
+    /// const clause1 = Dialect.postgresql.limitClause(10, null);    // " LIMIT 10"
+    /// const clause2 = Dialect.postgresql.limitClause(10, 5);       // " LIMIT 10 OFFSET 5"
+    /// const clause3 = Dialect.postgresql.limitClause(null, 5);     // " OFFSET 5"
+    /// ```
+    pub fn limitClause(comptime self: Dialect, comptime limit: ?usize, comptime offset: ?usize) []const u8 {
         return comptime switch (self) {
             .postgresql, .mysql, .sqlite => blk: {
-                var buf: [64]u8 = undefined;
-                var str: []const u8 = "";
-
                 if (limit) |l| {
-                    str = std.fmt.bufPrint(&buf, " LIMIT {d}", .{l}) catch unreachable;
-
                     if (offset) |o| {
-                        str = std.fmt.bufPrint(&buf, " LIMIT {d} OFFSET {d}", .{ l, o }) catch unreachable;
+                        break :blk std.fmt.comptimePrint(" LIMIT {d} OFFSET {d}", .{ l, o });
+                    } else {
+                        break :blk std.fmt.comptimePrint(" LIMIT {d}", .{l});
                     }
                 } else if (offset) |o| {
                     // PostgreSQL 支持只有 OFFSET
                     if (self == .postgresql) {
-                        str = std.fmt.bufPrint(&buf, " OFFSET {d}", .{o}) catch unreachable;
+                        break :blk std.fmt.comptimePrint(" OFFSET {d}", .{o});
+                    } else {
+                        // MySQL/SQLite 不支持只有 OFFSET
+                        break :blk "";
                     }
+                } else {
+                    break :blk "";
                 }
-
-                break :blk str[0..str.len].*;
             },
         };
     }
@@ -334,5 +344,35 @@ test "comptime evaluation - zero runtime cost" {
         _ = pg_quoted;
 
         // 如果这些不是 comptime，编译会失败
+    }
+}
+
+test "limitClause comptime safety" {
+    comptime {
+        // PostgreSQL: LIMIT + OFFSET
+        const pg1 = Dialect.postgresql.limitClause(10, 5);
+        std.debug.assert(std.mem.eql(u8, pg1, " LIMIT 10 OFFSET 5"));
+
+        // PostgreSQL: 只有 LIMIT
+        const pg2 = Dialect.postgresql.limitClause(10, null);
+        std.debug.assert(std.mem.eql(u8, pg2, " LIMIT 10"));
+
+        // PostgreSQL: 只有 OFFSET
+        const pg3 = Dialect.postgresql.limitClause(null, 5);
+        std.debug.assert(std.mem.eql(u8, pg3, " OFFSET 5"));
+
+        // MySQL: LIMIT + OFFSET
+        const mysql1 = Dialect.mysql.limitClause(10, 5);
+        std.debug.assert(std.mem.eql(u8, mysql1, " LIMIT 10 OFFSET 5"));
+
+        // MySQL: 只有 LIMIT
+        const mysql2 = Dialect.mysql.limitClause(10, null);
+        std.debug.assert(std.mem.eql(u8, mysql2, " LIMIT 10"));
+
+        // MySQL: 不支持只有 OFFSET
+        const mysql3 = Dialect.mysql.limitClause(null, 5);
+        std.debug.assert(std.mem.eql(u8, mysql3, ""));
+
+        // 所有调用都必须在编译时完成，确保内存安全
     }
 }

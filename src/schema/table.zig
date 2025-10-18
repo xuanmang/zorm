@@ -20,12 +20,12 @@ const ColumnType = @import("schema.zig").ColumnType;
 
 /// 列约束类型
 pub const ConstraintType = enum {
-    primary_key,    // 主键
-    foreign_key,    // 外键
-    unique,         // 唯一约束
-    not_null,       // 非空约束
-    default_value,  // 默认值
-    check,          // 检查约束
+    primary_key, // 主键
+    foreign_key, // 外键
+    unique, // 唯一约束
+    not_null, // 非空约束
+    default_value, // 默认值
+    check, // 检查约束
 };
 
 /// 列定义

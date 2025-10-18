@@ -127,6 +127,13 @@ pub const Error = error{
     /// 触发条件: 使用当前数据库方言不支持的特性
     /// 使用场景: 在 MySQL 5.6 上使用 JSON 类型,或在 SQLite 上使用 UPSERT
     UnsupportedFeature,
+
+    // ========== Schema 错误 (Schema Errors) ==========
+
+    /// 未指定列
+    /// 触发条件: 创建索引时未指定任何列
+    /// 使用场景: Index.toSQL() 时 columns 列表为空
+    NoColumnsSpecified,
 };
 
 /// 错误处理辅助函数示例
@@ -278,8 +285,10 @@ test "all error types are defined" {
         // 方言错误
         error.UnsupportedDialect,
         error.UnsupportedFeature,
+        // Schema 错误
+        error.NoColumnsSpecified,
     };
 
-    // 验证数组长度符合预期(20个错误)
-    try testing.expectEqual(@as(usize, 20), errors.len);
+    // 验证数组长度符合预期(21个错误)
+    try testing.expectEqual(@as(usize, 21), errors.len);
 }

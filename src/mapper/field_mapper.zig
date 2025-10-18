@@ -152,30 +152,30 @@ const MockRow = struct {
     values: []const ?[]const u8,
 
     fn isNull(ptr: *anyopaque, index: usize) bool {
-        const self: *const MockRow = @alignCast(@ptrCast(ptr));
+        const self: *const MockRow = @ptrCast(@alignCast(ptr));
         return self.values[index] == null;
     }
 
     fn getInt(ptr: *anyopaque, index: usize) !i64 {
-        const self: *const MockRow = @alignCast(@ptrCast(ptr));
+        const self: *const MockRow = @ptrCast(@alignCast(ptr));
         const val_str = self.values[index] orelse return error.NullValue;
         return try std.fmt.parseInt(i64, val_str, 10);
     }
 
     fn getFloat(ptr: *anyopaque, index: usize) !f64 {
-        const self: *const MockRow = @alignCast(@ptrCast(ptr));
+        const self: *const MockRow = @ptrCast(@alignCast(ptr));
         const val_str = self.values[index] orelse return error.NullValue;
         return try std.fmt.parseFloat(f64, val_str);
     }
 
     fn getBool(ptr: *anyopaque, index: usize) !bool {
-        const self: *const MockRow = @alignCast(@ptrCast(ptr));
+        const self: *const MockRow = @ptrCast(@alignCast(ptr));
         const val_str = self.values[index] orelse return error.NullValue;
         return std.mem.eql(u8, val_str, "true") or std.mem.eql(u8, val_str, "1");
     }
 
     fn getString(ptr: *anyopaque, index: usize) ![]const u8 {
-        const self: *const MockRow = @alignCast(@ptrCast(ptr));
+        const self: *const MockRow = @ptrCast(@alignCast(ptr));
         return self.values[index] orelse return error.NullValue;
     }
 

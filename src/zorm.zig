@@ -51,6 +51,12 @@ pub const schema = struct {
     pub const getTableMeta = @import("schema/schema.zig").getTableMeta;
     pub const Table = @import("schema/table.zig").Table;
     pub const Column = @import("schema/table.zig").Column;
+    pub const Index = @import("schema/index.zig").Index;
+    pub const IndexMethod = @import("schema/index.zig").IndexMethod;
+    pub const Migration = @import("schema/migration.zig").Migration;
+    pub const MigrationManager = @import("schema/migration.zig").MigrationManager;
+    pub const Direction = @import("schema/migration.zig").Direction;
+    pub const MigrationStatus = @import("schema/migration.zig").MigrationStatus;
 };
 pub const driver = struct {
     pub const postgres = @import("driver/postgres.zig");
@@ -105,6 +111,12 @@ pub const scanRow = mapper.field_mapper.scanRow;
 pub const Table = schema.Table;
 pub const Column = schema.Column;
 pub const ColumnType = schema.ColumnType;
+pub const Index = schema.Index;
+pub const IndexMethod = schema.IndexMethod;
+pub const Migration = schema.Migration;
+pub const MigrationManager = schema.MigrationManager;
+pub const Direction = schema.Direction;
+pub const MigrationStatus = schema.MigrationStatus;
 
 // 导出完整的错误类型模块
 pub const errors = @import("error.zig");

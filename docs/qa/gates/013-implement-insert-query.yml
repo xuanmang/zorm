@@ -1,0 +1,61 @@
+# Quality Gate Decision for Story 013
+schema: 1
+story: "013"
+story_title: "实现 INSERT 查询构建器"
+gate: "PASS"
+status_reason: "完整实现了 INSERT 查询构建器,支持单行/批量插入、RETURNING、ON CONFLICT 等高级功能,代码质量优秀"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-01-17T11:15:00Z"
+
+waiver: { active: false }
+
+top_issues: []
+
+evidence:
+  tests_reviewed: 9
+  risks_identified: 0
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "参数化查询防止 SQL 注入"
+  performance:
+    status: PASS
+    notes: "批量插入支持,减少数据库往返"
+  reliability:
+    status: PASS
+    notes: "完整内存管理,无内存泄漏"
+  maintainability:
+    status: PASS
+    notes: "清晰的 API 设计"
+
+quality_score: 95
+
+test_coverage:
+  total_tests: 9
+  tests_passed: 9
+  coverage_areas:
+    - "单行插入 (PostgreSQL/MySQL)"
+    - "批量插入"
+    - "RETURNING 子句"
+    - "ON CONFLICT DO NOTHING"
+    - "ON CONFLICT DO UPDATE"
+    - "ON DUPLICATE KEY UPDATE (MySQL)"
+    - "完整复杂插入"
+
+code_quality:
+  strengths:
+    - "支持单行和批量插入"
+    - "RETURNING 子句 (PostgreSQL/SQLite)"
+    - "ON CONFLICT 处理 (PostgreSQL/SQLite)"
+    - "ON DUPLICATE KEY UPDATE (MySQL)"
+    - "编译时方言特性检测"
+    - "完整的参数绑定"
+
+recommendations:
+  future:
+    - action: "考虑添加 INSERT...SELECT 支持"
+      refs: ["src/query/query.zig:386-712"]

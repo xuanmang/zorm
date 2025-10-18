@@ -361,11 +361,12 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             // 执行查询
-            var rows = try self.db.query(query_str, all_args.items);
-            defer rows.deinit(self.allocator);
+            var result = try self.db.query(query_str, all_args.items);
+            defer result.close();
+            defer result.rows.deinit();
 
             // 使用 result_scanner 扫描单行
-            return result_scanner.scanOne(T, &rows, self.allocator);
+            return result_scanner.scanOne(T, &result.rows, self.allocator);
         }
 
         /// 执行查询并扫描多条记录
@@ -399,15 +400,16 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             // 执行查询
-            var rows = try self.db.query(query_str, all_args.items);
-            defer rows.deinit(self.allocator);
+            var result = try self.db.query(query_str, all_args.items);
+            defer result.close();
+            defer result.rows.deinit();
 
             // 使用 ArrayList 收集结果
             var results = std.ArrayList(T){};
             errdefer results.deinit(self.allocator);
 
             // 使用 result_scanner 扫描所有行
-            try result_scanner.scanAll(T, &rows, self.allocator, &results);
+            try result_scanner.scanAll(T, &result.rows, self.allocator, &results);
 
             return results.toOwnedSlice(self.allocator);
         }

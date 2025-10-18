@@ -20,6 +20,8 @@ const hooks_mod = @import("hooks.zig");
 const QueryHook = hooks_mod.QueryHook;
 const types_mod = @import("../types.zig");
 const QueryArg = types_mod.QueryArg;
+const driver = @import("../driver/connection.zig");
+const Rows = driver.Rows;
 
 /// DB 配置选项
 pub const DBOptions = struct {
@@ -131,6 +133,8 @@ pub const Conn = struct {
 pub const Result = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
+    /// 底层行迭代器 (暴露给用户直接访问)
+    rows: Rows,
 
     pub const VTable = struct {
         next: *const fn (ptr: *anyopaque) anyerror!bool,

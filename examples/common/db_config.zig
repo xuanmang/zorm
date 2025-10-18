@@ -98,12 +98,26 @@ const PostgresDriverConnAdapter = struct {
         const self: *PostgresDriverConnAdapter = @ptrCast(@alignCast(ptr));
         const rows = try self.driver.query(query_str, args);
 
-        // 创建 Result 包装
+        // 创建 ResultWrapper 来适配 Rows 到 Result 接口
+        const wrapper = try self.allocator.create(ResultWrapper);
+        wrapper.* = .{
+            .allocator = self.allocator,
+        };
+
+        // 创建 Result VTable
+        const result_vtable = try self.allocator.create(zorm.core.Result.VTable);
+        result_vtable.* = .{
+            .next = ResultWrapper.next,
+            .scan = ResultWrapper.scan,
+            .close = ResultWrapper.close,
+        };
+
+        // 创建 Result 接口 - 包含 rows 字段
         const result = try self.allocator.create(zorm.core.Result);
         result.* = .{
-            .allocator = self.allocator,
+            .ptr = wrapper,
+            .vtable = result_vtable,
             .rows = rows,
-            .rows_affected = 0,
         };
         return result;
     }
@@ -124,6 +138,30 @@ const PostgresDriverConnAdapter = struct {
         .begin = begin,
         .close = close,
     };
+};
+
+/// ResultWrapper: 将 connection.Rows 适配到 core.Result 接口
+const ResultWrapper = struct {
+    allocator: std.mem.Allocator,
+
+    fn next(ptr: *anyopaque) anyerror!bool {
+        _ = ptr;
+        // 实际的 next 操作由 Result.rows.next() 完成
+        // 这里只是 VTable 的占位符
+        return error.NotImplemented;
+    }
+
+    fn scan(ptr: *anyopaque, dest: [][]u8) anyerror!void {
+        _ = ptr;
+        _ = dest;
+        return error.NotImplemented;
+    }
+
+    fn close(ptr: *anyopaque) void {
+        const self: *ResultWrapper = @ptrCast(@alignCast(ptr));
+        // 清理 wrapper 自身
+        self.allocator.destroy(self);
+    }
 };
 
 /// 创建 ZORM DB 实例

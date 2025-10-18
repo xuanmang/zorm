@@ -117,6 +117,8 @@ pub fn build(b: *std.Build) void {
         "15_error_handling",
         "16_hooks_system",
         "17_connection_pool",
+        "18_raw_sql",
+        "19_pagination",
     };
 
     for (all_examples) |name| {

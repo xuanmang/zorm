@@ -75,7 +75,7 @@ fn createTableFromModel(driver: *zorm.PostgresDriver, allocator: std.mem.Allocat
 
     // 使用 comptime 反射遍历所有字段
     inline for (@typeInfo(Model).Struct.fields) |field| {
-        var col = inferColumn(field);
+        const col = inferColumn(field);
         _ = try table.addColumn(col);
     }
 

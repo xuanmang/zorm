@@ -118,9 +118,10 @@ pub const PostgresDriver = struct {
     /// 执行 SELECT 查询
     /// 返回结果集迭代器
     pub fn query(self: *PostgresDriver, sql: []const u8, args: []const QueryArg) !Rows {
-        // 无参数的简单情况，直接使用 pool.query
+        // 无参数的简单情况，直接使用 pool.queryOpts
+        // 启用 column_names 选项以获取列元数据
         const result = if (args.len == 0) blk: {
-            const r = self.pool.query(sql, .{}) catch |err| {
+            const r = self.pool.queryOpts(sql, .{}, .{ .column_names = true }) catch |err| {
                 return switch (err) {
                     error.Unexpected => Error.QueryFailed,
                     error.OutOfMemory => Error.OutOfMemory,
@@ -137,8 +138,12 @@ pub const PostgresDriver = struct {
             // 注意：只在错误时释放连接，成功时由 Result 负责释放
             errdefer self.pool.release(conn);
 
-            // 创建 statement，设置 release_conn = true 让 Result 负责释放连接
-            var stmt = pg.Stmt.init(conn, .{ .release_conn = true }) catch {
+            // 创建 statement，启用 column_names 选项以获取列元数据
+            // 设置 release_conn = true 让 Result 负责释放连接
+            var stmt = pg.Stmt.init(conn, .{
+                .column_names = true,
+                .release_conn = true,
+            }) catch {
                 return Error.QueryFailed;
             };
             // 注意：只在错误情况下调用 deinit，成功时所有权转移给 result
@@ -188,6 +193,8 @@ pub const PostgresDriver = struct {
         vtable.* = .{
             .next = &PostgresRows.next,
             .deinit = &PostgresRows.deinit,
+            .columnCount = &PostgresRows.columnCount,
+            .columnName = &PostgresRows.columnName,
         };
 
         return Rows{
@@ -291,6 +298,19 @@ const PostgresRows = struct {
 
         self.result.deinit();
         allocator.destroy(self);
+    }
+
+    fn columnCount(ptr: *anyopaque) usize {
+        const self: *PostgresRows = @ptrCast(@alignCast(ptr));
+        return self.result.number_of_columns;
+    }
+
+    fn columnName(ptr: *anyopaque, index: usize) Error![]const u8 {
+        const self: *PostgresRows = @ptrCast(@alignCast(ptr));
+        if (index >= self.result.column_names.len) {
+            return Error.InvalidColumnIndex;
+        }
+        return self.result.column_names[index];
     }
 };
 

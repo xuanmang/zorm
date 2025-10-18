@@ -243,7 +243,7 @@ pub fn DB(comptime dialect: Dialect) type {
                 .options = options,
                 .stats = .{},
                 .current_tx = null,
-                .query_hooks = std.ArrayList(QueryHook).init(allocator),
+                .query_hooks = .{},
             };
 
             return self;
@@ -264,7 +264,7 @@ pub fn DB(comptime dialect: Dialect) type {
             }
 
             // 清理钩子列表
-            self.query_hooks.deinit();
+            self.query_hooks.deinit(self.allocator);
 
             // 关闭连接
             self.conn.close();
@@ -429,30 +429,37 @@ pub fn DB(comptime dialect: Dialect) type {
                 };
             }
 
+            // 记录开始时间
+            const start_time = std.time.nanoTimestamp();
+
             // 如果有活动事务,使用事务执行
             const result = if (self.current_tx) |tx|
                 tx.exec(query_str, args)
             else
                 self.conn.exec(query_str, args);
 
+            // 计算执行时间
+            const end_time = std.time.nanoTimestamp();
+            const duration_ns = @as(u64, @intCast(end_time - start_time));
+
             // 处理结果
             if (result) |_| {
                 // 执行钩子 - afterQuery
                 for (self.query_hooks.items) |hook| {
-                    hook.afterQuery(query_str, args) catch |err| {
+                    hook.afterQuery(query_str, args, duration_ns) catch |err| {
                         std.log.warn("Query hook afterQuery failed: {}", .{err});
                     };
                 }
             } else |err| {
                 self.stats.recordError();
-                
+
                 // 执行钩子 - onError
                 for (self.query_hooks.items) |hook| {
                     hook.onError(query_str, args, err) catch |hook_err| {
                         std.log.warn("Query hook onError failed: {}", .{hook_err});
                     };
                 }
-                
+
                 return err;
             }
         }
@@ -475,31 +482,38 @@ pub fn DB(comptime dialect: Dialect) type {
                 };
             }
 
+            // 记录开始时间
+            const start_time = std.time.nanoTimestamp();
+
             // 如果有活动事务,使用事务执行
             const result = if (self.current_tx) |tx|
                 tx.query(query_str, args)
             else
                 self.conn.query(query_str, args);
 
+            // 计算执行时间
+            const end_time = std.time.nanoTimestamp();
+            const duration_ns = @as(u64, @intCast(end_time - start_time));
+
             // 处理结果
             if (result) |res| {
                 // 执行钩子 - afterQuery
                 for (self.query_hooks.items) |hook| {
-                    hook.afterQuery(query_str, args) catch |err| {
+                    hook.afterQuery(query_str, args, duration_ns) catch |err| {
                         std.log.warn("Query hook afterQuery failed: {}", .{err});
                     };
                 }
                 return res;
             } else |err| {
                 self.stats.recordError();
-                
+
                 // 执行钩子 - onError
                 for (self.query_hooks.items) |hook| {
                     hook.onError(query_str, args, err) catch |hook_err| {
                         std.log.warn("Query hook onError failed: {}", .{hook_err});
                     };
                 }
-                
+
                 return err;
             }
         }

@@ -167,27 +167,27 @@ pub fn zigToSQLType(comptime T: type) SQLType {
     const type_info = @typeInfo(T);
 
     return switch (type_info) {
-        .Int => |int_info| {
+        .int => |int_info| {
             if (int_info.bits <= 16) return .smallint;
             if (int_info.bits <= 32) return .integer;
             return .bigint;
         },
-        .Float => |float_info| {
+        .float => |float_info| {
             if (float_info.bits <= 32) return .real;
             return .double;
         },
-        .Bool => .boolean,
-        .Pointer => |ptr_info| {
+        .bool => .boolean,
+        .pointer => |ptr_info| {
             // []const u8 -> TEXT
-            if (ptr_info.size == .Slice and ptr_info.child == u8) {
+            if (ptr_info.size == .slice and ptr_info.child == u8) {
                 return .text;
             }
             @compileError("Unsupported pointer type for SQL: " ++ @typeName(T));
         },
-        .Optional => |opt_info| {
+        .optional => |opt_info| {
             return zigToSQLType(opt_info.child);
         },
-        .Array => |arr_info| {
+        .array => |arr_info| {
             // [N]u8 -> TEXT
             if (arr_info.child == u8) {
                 return .text;
@@ -200,16 +200,16 @@ pub fn zigToSQLType(comptime T: type) SQLType {
 
 /// 检查类型是否是可选类型
 pub fn isOptional(comptime T: type) bool {
-    return @typeInfo(T) == .Optional;
+    return @typeInfo(T) == .optional;
 }
 
 /// 获取可选类型的子类型
 pub fn optionalChild(comptime T: type) type {
     const type_info = @typeInfo(T);
-    if (type_info != .Optional) {
+    if (type_info != .optional) {
         @compileError("Type is not optional: " ++ @typeName(T));
     }
-    return type_info.Optional.child;
+    return type_info.optional.child;
 }
 
 test "zigToSQLType" {

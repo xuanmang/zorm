@@ -1303,8 +1303,7 @@ pub fn CreateTableQuery(comptime T: type, comptime dialect: Dialect) type {
             defer self.allocator.free(query_str);
 
             // 执行 DDL（无参数绑定）
-            const result = try self.db.exec(query_str, &.{});
-            defer result.close();
+            try self.db.exec(query_str, &.{});
         }
     };
 }
@@ -1456,7 +1455,7 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
                 .db = db,
                 .table_name = table_name,
                 .index_name = index_name,
-                .columns = std.ArrayList([]const u8).init(allocator),
+                .columns = .{},
                 .unique_flag = false,
                 .if_not_exists_flag = false,
             };
@@ -1466,7 +1465,7 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 释放资源
         pub fn deinit(self: *Self) void {
-            self.columns.deinit();
+            self.columns.deinit(self.allocator);
             self.allocator.destroy(self);
         }
 
@@ -1484,42 +1483,42 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 添加索引列
         pub fn column(self: *Self, col_name: []const u8) !*Self {
-            try self.columns.append(col_name);
+            try self.columns.append(self.allocator, col_name);
             return self;
         }
 
         /// 构建 CREATE INDEX SQL 语句
         pub fn build(self: *Self) ![]const u8 {
-            var buf = std.ArrayList(u8).init(self.allocator);
-            errdefer buf.deinit();
+            var buf: std.ArrayList(u8) = .{};
+            errdefer buf.deinit(self.allocator);
 
-            try buf.appendSlice("CREATE ");
-            
+            try buf.appendSlice(self.allocator, "CREATE ");
+
             if (self.unique_flag) {
-                try buf.appendSlice("UNIQUE ");
+                try buf.appendSlice(self.allocator, "UNIQUE ");
             }
-            
-            try buf.appendSlice("INDEX ");
-            
+
+            try buf.appendSlice(self.allocator, "INDEX ");
+
             // IF NOT EXISTS 支持 (PostgreSQL 和 SQLite)
             if (self.if_not_exists_flag and (dialect == .postgresql or dialect == .sqlite)) {
-                try buf.appendSlice("IF NOT EXISTS ");
+                try buf.appendSlice(self.allocator, "IF NOT EXISTS ");
             }
-            
-            try buf.appendSlice(self.index_name);
-            try buf.appendSlice(" ON ");
-            try buf.appendSlice(self.table_name);
-            try buf.appendSlice(" (");
-            
+
+            try buf.appendSlice(self.allocator, self.index_name);
+            try buf.appendSlice(self.allocator, " ON ");
+            try buf.appendSlice(self.allocator, self.table_name);
+            try buf.appendSlice(self.allocator, " (");
+
             // 添加列名
             for (self.columns.items, 0..) |col, i| {
-                if (i > 0) try buf.appendSlice(", ");
-                try buf.appendSlice(col);
+                if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                try buf.appendSlice(self.allocator, col);
             }
-            
-            try buf.appendSlice(")");
 
-            return buf.toOwnedSlice();
+            try buf.appendSlice(self.allocator, ")");
+
+            return buf.toOwnedSlice(self.allocator);
         }
 
         /// 执行 CREATE INDEX 语句

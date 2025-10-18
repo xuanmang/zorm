@@ -16,7 +16,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Dialect = @import("../dialect/dialect.zig").Dialect;
-const ColumnType = @import("schema.zig").ColumnType;
+pub const ColumnType = @import("schema.zig").ColumnType;
 
 /// 列约束类型
 pub const ConstraintType = enum {
@@ -154,6 +154,11 @@ pub const Table = struct {
         errdefer buf.deinit(self.allocator);
         const writer = buf.writer(self.allocator);
 
+        // 先获取主键列数量，以决定如何处理主键
+        const pk_columns = try self.getPrimaryKeyColumns();
+        defer self.allocator.free(pk_columns);
+        const has_composite_pk = pk_columns.len > 1;
+
         // CREATE TABLE table_name
         try writer.print("CREATE TABLE {s} (\n", .{self.name});
 
@@ -163,14 +168,12 @@ pub const Table = struct {
                 try writer.writeAll(",\n");
             }
             try writer.writeAll("  ");
-            try writeColumnDefinition(writer, &col, dialect);
+            // 传递是否为组合主键的信息
+            try writeColumnDefinition(writer, &col, dialect, has_composite_pk);
         }
 
         // 主键约束 (如果有多列主键,需要单独声明)
-        const pk_columns = try self.getPrimaryKeyColumns();
-        defer self.allocator.free(pk_columns);
-
-        if (pk_columns.len > 1) {
+        if (has_composite_pk) {
             try writer.writeAll(",\n  PRIMARY KEY (");
             for (pk_columns, 0..) |pk_col, i| {
                 if (i > 0) try writer.writeAll(", ");
@@ -200,7 +203,7 @@ pub const Table = struct {
 };
 
 /// 写入列定义到 writer
-fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: Dialect) !void {
+fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: Dialect, has_composite_pk: bool) !void {
     // 列名
     try writer.print("{s} ", .{col.name});
 
@@ -208,8 +211,8 @@ fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: 
     const sql_type = col.column_type.sqlType(dialect);
     try writer.writeAll(sql_type);
 
-    // 主键 (单列主键)
-    if (col.primary_key) {
+    // 主键 (只有单列主键时才在列定义中声明)
+    if (col.primary_key and !has_composite_pk) {
         try writer.writeAll(" PRIMARY KEY");
     }
 

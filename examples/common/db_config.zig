@@ -129,7 +129,11 @@ const PostgresDriverConnAdapter = struct {
 
     fn close(ptr: *anyopaque) void {
         const self: *PostgresDriverConnAdapter = @ptrCast(@alignCast(ptr));
+        // 关闭驱动连接
         self.driver.close() catch {};
+        // 释放驱动和适配器的内存
+        self.allocator.destroy(self.driver);
+        self.allocator.destroy(self);
     }
 
     const vtable = zorm.core.Conn.VTable{

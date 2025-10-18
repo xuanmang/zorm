@@ -45,7 +45,7 @@ pub fn generateCreateTableSQL(
     const table_name = getTableName(T);
     try writer.print("CREATE TABLE {s} (\n", .{table_name});
 
-    const fields = @typeInfo(T).Struct.fields;
+    const fields = @typeInfo(T).@"struct".fields;
     comptime var first = true;
 
     inline for (fields) |field| {
@@ -81,7 +81,7 @@ pub fn generateCreateTableSQL(
 
 /// 从 struct 字段生成 Column 列表
 pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
-    const fields = @typeInfo(T).Struct.fields;
+    const fields = @typeInfo(T).@"struct".fields;
     var columns = try allocator.alloc(Column, fields.len);
     errdefer allocator.free(columns);
 
@@ -93,16 +93,16 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
         // 映射 SQLType 到 ColumnType
         const col_type: ColumnType = switch (sql_type) {
             .smallint => .smallint,
-            .integer => .integer,
-            .bigint => if (is_primary) .bigserial else .bigint,
-            .real => .real,
-            .double => .double_precision,
+            .integer => .int,
+            .bigint => .bigint,
+            .real => .float,
+            .double => .double,
             .boolean => .boolean,
             .text => .text,
             .varchar => .varchar,
-            .char => .char,
+            .char => .varchar, // char 映射到 varchar
             .timestamp => .timestamp,
-            .timestamptz => .timestamptz,
+            .timestamptz => .timestamp, // timestamptz 映射到 timestamp
             .date => .date,
             .time => .time,
             .json => .json,
@@ -110,8 +110,8 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
             .blob => .bytea,
             .bytea => .bytea,
             .uuid => .uuid,
-            .serial => .serial,
-            .bigserial => .bigserial,
+            .serial => .int, // serial 映射到 int (自增在其他地方处理)
+            .bigserial => .bigint, // bigserial 映射到 bigint
         };
 
         columns[i] = .{
@@ -131,7 +131,7 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
 
 /// 检测结构体是否有指定字段
 pub fn hasField(comptime T: type, comptime field_name: []const u8) bool {
-    const fields = @typeInfo(T).Struct.fields;
+    const fields = @typeInfo(T).@"struct".fields;
     inline for (fields) |field| {
         if (comptime std.mem.eql(u8, field.name, field_name)) {
             return true;
@@ -142,7 +142,7 @@ pub fn hasField(comptime T: type, comptime field_name: []const u8) bool {
 
 /// 获取字段类型
 pub fn getFieldType(comptime T: type, comptime field_name: []const u8) type {
-    const fields = @typeInfo(T).Struct.fields;
+    const fields = @typeInfo(T).@"struct".fields;
     inline for (fields) |field| {
         if (comptime std.mem.eql(u8, field.name, field_name)) {
             return field.type;

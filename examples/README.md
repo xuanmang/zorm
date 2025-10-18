@@ -67,26 +67,26 @@ zig build run-all-examples
 
 | 编号 | 文件名 | 标题 | 功能需求 | 说明 |
 |------|--------|------|----------|------|
-| 06 | 06_query_builder.zig | 查询构建器 | FR3 | 链式 API 构建复杂查询 |
-| 07 | 07_transactions.zig | 事务管理 | FR4 | 事务提交、回滚、嵌套 |
-| 08 | 08_relations_belongs_to.zig | Belongs-To 关系 | FR5 | 多对一关系映射 |
-| 09 | 09_relations_has_many.zig | Has-Many 关系 | FR5 | 一对多关系映射 |
-| 10 | 10_relations_many_to_many.zig | Many-to-Many 关系 | FR5 | 多对多关系映射 |
-| 12 | 12_bulk_operations.zig | 批量操作 | FR7 | 批量插入和更新优化 |
-| 14 | 14_type_mapping.zig | 类型映射 | FR9 | Zig 类型 ↔ SQL 类型 |
-| 15 | 15_error_handling.zig | 错误处理 | FR10 | 数据库错误捕获和恢复 |
-| 17 | 17_connection_pool.zig | 连接池 | FR12 | 连接池配置和管理 |
-| 18 | 18_raw_sql.zig | 原始 SQL | FR13 | 直接执行 SQL |
-| 19 | 19_pagination.zig | 分页查询 | FR14 | OFFSET/LIMIT 和 Cursor |
+| 06 | 06_query_builder.zig | 查询构建 | FR3 | 复杂 WHERE、JOIN、聚合 |
+| 07 | 07_transactions.zig | 事务管理 | FR4 | begin/commit/rollback |
+| 08 | 08_relations_belongs_to.zig | Belongs-To 关系 | FR5 | 多对一关系（Post → User） |
+| 09 | 09_relations_has_many.zig | Has-Many 关系 | FR5 | 一对多关系（User → Posts） |
+| 10 | 10_relations_many_to_many.zig | Many-to-Many 关系 | FR5 | 多对多关系（Post ↔ Tags） |
+| 12 | 12_batch_operations.zig | 批量操作 | FR2 | 批量插入/更新/UPSERT |
+| 14 | 14_type_mapping.zig | 类型映射 | FR7 | PostgreSQL ↔ Zig 类型 |
+| 15 | 15_error_handling.zig | 错误处理 | FR8 | 约束违反、事务回滚 |
+| 17 | 17_connection_pool.zig | 连接池 | FR1 | 连接池配置和管理 |
+| 18 | 18_raw_sql.zig | 原始 SQL | FR10 | 直接执行 SQL + 防注入 |
+| 19 | 19_pagination.zig | 分页查询 | FR11 | OFFSET/LIMIT 和 Cursor |
 
 ### 🔴 高级篇 (第5-6天)
 
 | 编号 | 文件名 | 标题 | 功能需求 | 说明 |
 |------|--------|------|----------|------|
-| 11 | 11_schema_migrations.zig | Schema 迁移 | FR6 | 表结构版本管理 |
-| 13 | 13_advanced_queries.zig | 高级查询 | FR8 | CTE、子查询、窗口函数 |
-| 16 | 16_hooks.zig | 钩子系统 | FR11 | 查询钩子和日志记录 |
-| 20 | 20_aggregation.zig | 聚合查询 | FR15 | COUNT、SUM、GROUP BY |
+| 11 | 11_schema_migrations.zig | Schema 迁移 | FR6 | 迁移版本管理和执行 |
+| 13 | 13_advanced_queries.zig | 高级查询 | FR3 | CTE、窗口函数、CASE |
+| 16 | 16_hooks_system.zig | Hooks 系统 | FR9 | 查询钩子、日志、审计 |
+| 20 | 20_aggregation.zig | 聚合查询 | FR12 | COUNT、SUM、GROUP BY、HAVING |
 
 ## 🎓 推荐学习路径
 

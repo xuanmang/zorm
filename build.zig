@@ -119,6 +119,7 @@ pub fn build(b: *std.Build) void {
         "17_connection_pool",
         "18_raw_sql",
         "19_pagination",
+        "20_aggregation",
     };
 
     for (all_examples) |name| {

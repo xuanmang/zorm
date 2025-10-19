@@ -97,7 +97,6 @@ test "UpdateQuery: whereIn() with OR condition" {
     defer query.deinit();
 
     const user_ids = [_]i64{ 1, 2 };
-    const admin_ids = [_]i64{ 100, 101 };
 
     _ = try query.set("verified = ?", .{true});
     _ = try query.whereIn("id", &user_ids);

@@ -2471,6 +2471,7 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 pub fn RawQuery(comptime dialect: Dialect) type {
     const DBType = db_mod.DB(dialect);
     const RawResult = types.RawResult;
+    const Error = @import("../error.zig").Error;
 
     return struct {
         const Self = @This();

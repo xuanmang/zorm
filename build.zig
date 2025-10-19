@@ -417,5 +417,22 @@ pub fn build(b: *std.Build) void {
         const run_simple_test = b.addRunArtifact(simple_test_exe);
         const simple_test_step = b.step("test-simple", "Run simple Stmt bind test");
         simple_test_step.dependOn(&run_simple_test.step);
+
+        // Story 2.5: Transaction Isolation Level 集成测试
+        const isolation_test_module = b.createModule(.{
+            .root_source_file = b.path("tests/integration/isolation_level_test.zig"),
+            .target = target,
+            .optimize = optimize,
+        });
+
+        isolation_test_module.addImport("zorm", zorm_module);
+
+        const isolation_tests = b.addTest(.{
+            .root_module = isolation_test_module,
+        });
+
+        const run_isolation_tests = b.addRunArtifact(isolation_tests);
+        const isolation_test_step = b.step("test-isolation", "Run transaction isolation level tests");
+        isolation_test_step.dependOn(&run_isolation_tests.step);
     }
 }

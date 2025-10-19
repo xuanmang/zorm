@@ -109,6 +109,8 @@ pub const TransactionError = transaction.TransactionError;
 // Story 2.4: 新事务管理系统
 pub const TxOptions = core.TxOptions;
 pub const TxManager = core.TxManager;
+// Story 2.5: 事务隔离级别
+pub const IsolationLevel = @import("core/types.zig").IsolationLevel;
 pub const Dialect = dialect.Dialect;
 pub const Feature = dialect.Feature;
 pub const QueryArg = @import("types.zig").QueryArg;

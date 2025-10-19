@@ -19,25 +19,20 @@ const db_mod = @import("db.zig");
 const Dialect = @import("../dialect/dialect.zig").Dialect;
 const zorm_error = @import("../error.zig");
 const Error = zorm_error.Error;
+const types_mod = @import("types.zig");
+const IsolationLevel = types_mod.IsolationLevel;
 
 /// 事务选项 (为 Story 2.5 隔离级别预留)
 pub const TxOptions = struct {
-    /// 事务隔离级别 (Story 2.5 实现)
-    isolation_level: IsolationLevel = .default,
+    /// 事务隔离级别 (Story 2.5)
+    /// null 表示使用数据库默认级别 (PostgreSQL: read_committed)
+    isolation_level: ?types_mod.IsolationLevel = null,
 
     /// 事务访问模式 (只读/读写)
     read_only: bool = false,
 
     /// 事务超时时间 (毫秒), 0 表示无限制
     timeout: u64 = 0,
-
-    pub const IsolationLevel = enum {
-        default, // 使用数据库默认级别
-        read_uncommitted, // 读未提交
-        read_committed, // 读已提交
-        repeatable_read, // 可重复读
-        serializable, // 序列化
-    };
 };
 
 /// TxManager - 泛型事务管理器
@@ -84,6 +79,8 @@ pub fn TxManager(comptime dialect: Dialect) type {
         is_rolled_back: bool,
         /// 事务选项
         options: TxOptions,
+        /// 当前事务使用的隔离级别 (用于调试和日志)
+        isolation_level: ?IsolationLevel,
 
         /// 初始化事务管理器 (由 DB.beginTx 调用)
         ///
@@ -107,6 +104,20 @@ pub fn TxManager(comptime dialect: Dialect) type {
             // 执行 BEGIN 语句
             const tx = try db.conn.begin();
 
+            // 设置隔离级别 (Story 2.5: AC2.5.4)
+            if (opts.isolation_level) |level| {
+                // 构建 SET TRANSACTION ISOLATION LEVEL 语句
+                const sql = try std.fmt.allocPrint(
+                    allocator,
+                    "SET TRANSACTION ISOLATION LEVEL {s}",
+                    .{level.toSQL()},
+                );
+                defer allocator.free(sql);
+
+                // 执行设置语句
+                try tx.exec(sql, &[_]types_mod.QueryArg{});
+            }
+
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
@@ -118,6 +129,7 @@ pub fn TxManager(comptime dialect: Dialect) type {
                 .is_committed = false,
                 .is_rolled_back = false,
                 .options = opts,
+                .isolation_level = opts.isolation_level,
             };
 
             // 标记 DB 有活动事务
@@ -303,7 +315,7 @@ pub fn TxManager(comptime dialect: Dialect) type {
 test "TxOptions 默认值" {
     const opts = TxOptions{};
 
-    try std.testing.expectEqual(TxOptions.IsolationLevel.default, opts.isolation_level);
+    try std.testing.expectEqual(@as(?IsolationLevel, null), opts.isolation_level);
     try std.testing.expectEqual(false, opts.read_only);
     try std.testing.expectEqual(@as(u64, 0), opts.timeout);
 }

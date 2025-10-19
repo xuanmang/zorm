@@ -259,6 +259,78 @@ pub fn isOptional(comptime field_type: type) bool {
     return @typeInfo(field_type) == .optional;
 }
 
+/// 事务隔离级别 (Story 2.5)
+///
+/// PostgreSQL 支持四个标准隔离级别:
+/// - read_uncommitted: 读未提交 (PostgreSQL 实际等同于 read_committed)
+/// - read_committed: 读已提交 (PostgreSQL 默认)
+/// - repeatable_read: 可重复读
+/// - serializable: 串行化
+///
+/// ## 隔离级别说明
+///
+/// **READ UNCOMMITTED** (PostgreSQL 不完全支持):
+/// - PostgreSQL 会自动升级为 READ COMMITTED
+/// - 不推荐使用,仅为 SQL 标准兼容性保留
+///
+/// **READ COMMITTED** (默认,推荐):
+/// - 查询只能看到事务开始前已提交的数据
+/// - 同一事务内的重复查询可能看到不同结果 (Non-repeatable Read)
+/// - 适用场景: 大多数 OLTP 应用,高并发场景
+/// - 性能开销: 最低
+///
+/// **REPEATABLE READ**:
+/// - 事务内的查询看到一致性快照
+/// - 避免 Non-repeatable Read
+/// - PostgreSQL MVCC 机制实际也避免了 Phantom Read
+/// - 适用场景: 需要一致性读的报表或分析
+/// - 性能开销: 中等
+///
+/// **SERIALIZABLE**:
+/// - 最高隔离级别,完全避免并发异常
+/// - 通过 SSI (Serializable Snapshot Isolation) 检测读写冲突
+/// - 可能导致事务串行化错误,需要应用层重试
+/// - 适用场景: 金融系统、关键业务逻辑
+/// - 性能开销: 最高
+///
+/// ## 示例
+/// ```zig
+/// const opts = TxOptions{ .isolation_level = .serializable };
+/// var tx = try db.beginTx(opts);
+/// defer tx.deinit();
+/// ```
+pub const IsolationLevel = enum {
+    /// 读未提交 (PostgreSQL 实际等同于 read_committed)
+    read_uncommitted,
+    /// 读已提交 (PostgreSQL 默认)
+    read_committed,
+    /// 可重复读
+    repeatable_read,
+    /// 串行化
+    serializable,
+
+    /// 转换为 SQL 语句
+    ///
+    /// 返回 PostgreSQL SET TRANSACTION ISOLATION LEVEL 语句中使用的级别名称
+    ///
+    /// ## 返回
+    /// SQL 隔离级别名称字符串
+    ///
+    /// ## 示例
+    /// ```zig
+    /// const level = IsolationLevel.serializable;
+    /// const sql = level.toSQL(); // "SERIALIZABLE"
+    /// ```
+    pub fn toSQL(self: IsolationLevel) []const u8 {
+        return switch (self) {
+            .read_uncommitted => "READ UNCOMMITTED",
+            .read_committed => "READ COMMITTED",
+            .repeatable_read => "REPEATABLE READ",
+            .serializable => "SERIALIZABLE",
+        };
+    }
+};
+
 // ============ 辅助工具函数 ============
 
 /// 提取完全限定名的最后部分

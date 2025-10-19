@@ -41,6 +41,7 @@ const builtin = @import("builtin");
 pub const core = @import("core/db.zig");
 pub const transaction = @import("core/transaction.zig");
 pub const hooks = @import("core/hooks.zig");
+pub const types = @import("core/types.zig");
 pub const dialect = @import("dialect/dialect.zig");
 pub const sql = @import("dialect/sql.zig");
 pub const query = @import("query/query.zig");
@@ -155,6 +156,7 @@ test {
     std.testing.refAllDecls(@This());
     // 显式引用所有子模块的测试
     _ = @import("reflect/comptime_utils.zig");
+    _ = @import("core/types.zig");
 }
 
 test "version" {

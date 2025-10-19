@@ -238,6 +238,26 @@ pub fn build(b: *std.Build) void {
     // 将 pool 测试添加到主测试步骤
     test_step.dependOn(&run_pool_tests.step);
 
+    // Story 1.6: 类型系统测试
+    const types_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/unit/types_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    types_test_module.addImport("zorm", zorm_module);
+
+    const types_tests = b.addTest(.{
+        .root_module = types_test_module,
+    });
+
+    const run_types_tests = b.addRunArtifact(types_tests);
+    const types_test_step = b.step("test-types", "Run type system tests");
+    types_test_step.dependOn(&run_types_tests.step);
+
+    // 将类型测试添加到主测试步骤
+    test_step.dependOn(&run_types_tests.step);
+
     // Story 1.3: 列选择和 DISTINCT 测试
     const column_distinct_test_module = b.createModule(.{
         .root_source_file = b.path("tests/column_distinct_test.zig"),

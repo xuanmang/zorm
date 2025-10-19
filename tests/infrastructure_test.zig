@@ -4,8 +4,8 @@
 
 const std = @import("std");
 const testing = std.testing;
-const test_helper = @import("test_helper.zig");
-const seed_data = @import("seed_data.zig");
+const test_helper = @import("test_helper");
+const seed_data = @import("seed_data");
 
 test "Infrastructure: setupTestDB and cleanupTestDB" {
     const allocator = testing.allocator;

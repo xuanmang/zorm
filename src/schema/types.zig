@@ -154,17 +154,11 @@ test "zigToSQLType" {
 test "SQLType.toSQL" {
     const testing = std.testing;
 
-    // PostgreSQL
+    // PostgreSQL (ZORM 仅支持 PostgreSQL)
     try testing.expectEqualStrings("BIGINT", SQLType.bigint.toSQL(.postgresql));
     try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.postgresql));
     try testing.expectEqualStrings("JSONB", SQLType.jsonb.toSQL(.postgresql));
-
-    // MySQL
-    try testing.expectEqualStrings("BIGINT", SQLType.bigint.toSQL(.postgresql));
-    try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.postgresql));
-    try testing.expectEqualStrings("JSON", SQLType.jsonb.toSQL(.postgresql));
-
-    // SQLite
-    try testing.expectEqualStrings("INTEGER", SQLType.bigint.toSQL(.postgresql));
-    try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.postgresql));
+    try testing.expectEqualStrings("UUID", SQLType.uuid.toSQL(.postgresql));
+    try testing.expectEqualStrings("SERIAL", SQLType.serial.toSQL(.postgresql));
+    try testing.expectEqualStrings("BIGSERIAL", SQLType.bigserial.toSQL(.postgresql));
 }

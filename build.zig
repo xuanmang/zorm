@@ -207,8 +207,19 @@ pub fn build(b: *std.Build) void {
     docs_step.dependOn(&install_docs.step);
 
     // 单元测试配置
+    const unit_test_module = b.createModule(.{
+        .root_source_file = b.path("src/zorm.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    unit_test_module.addOptions("build_options", options);
+    unit_test_module.addImport("pg", pg_dep.module("pg"));
+    unit_test_module.addImport("test_helper", test_helper_module);
+    unit_test_module.addImport("seed_data", seed_data_module);
+
     const unit_tests = b.addTest(.{
-        .root_module = zorm_module,
+        .root_module = unit_test_module,
     });
 
     const run_unit_tests = b.addRunArtifact(unit_tests);
@@ -386,6 +397,8 @@ pub fn build(b: *std.Build) void {
     });
 
     infrastructure_test_module.addImport("zorm", zorm_module);
+    infrastructure_test_module.addImport("test_helper", test_helper_module);
+    infrastructure_test_module.addImport("seed_data", seed_data_module);
 
     const infrastructure_tests = b.addTest(.{
         .root_module = infrastructure_test_module,

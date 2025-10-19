@@ -622,6 +622,28 @@ test "HavingClause creation" {
 
 // ========== INSERT 相关类型 ==========
 
+/// INSERT 查询结果
+///
+/// 包含插入操作的结果信息。
+///
+/// 使用示例:
+/// ```zig
+/// const result = try query.exec();
+/// std.debug.print("插入了 {} 行\n", .{result.rows_affected});
+/// if (result.last_insert_id) |id| {
+///     std.debug.print("最后插入的 ID: {}\n", .{id});
+/// }
+/// ```
+pub const InsertResult = struct {
+    /// 受影响的行数
+    rows_affected: usize,
+
+    /// 最后插入的 ID (对于支持的数据库)
+    /// PostgreSQL 需要通过 RETURNING 获取
+    /// MySQL 可以直接返回 LAST_INSERT_ID()
+    last_insert_id: ?i64,
+};
+
 /// 冲突处理动作
 ///
 /// 用于 PostgreSQL/SQLite 的 ON CONFLICT 子句。

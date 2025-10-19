@@ -27,6 +27,7 @@ pub const OrderByClause = types.OrderByClause;
 pub const OrderDirection = types.OrderDirection;
 pub const HavingClause = types.HavingClause;
 pub const QueryArg = types.QueryArg;
+pub const InsertResult = types.InsertResult;
 pub const ConflictAction = types.ConflictAction;
 pub const OnConflictClause = types.OnConflictClause;
 pub const OnDuplicateKeyUpdate = types.OnDuplicateKeyUpdate;
@@ -369,6 +370,99 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             return result_scanner.scanOne(T, &result.rows, self.allocator);
         }
 
+        /// 返回查询结果的行数
+        ///
+        /// 执行 SELECT COUNT(*) 查询，返回符合条件的记录数量。
+        /// 支持 DISTINCT 和列选择，例如:
+        /// - COUNT(*): 所有行
+        /// - COUNT(column): 指定列的非 NULL 行
+        /// - COUNT(DISTINCT column): 去重后的行数
+        ///
+        /// 返回:
+        /// - usize: 记录数量
+        ///
+        /// 错误:
+        /// - error.QueryFailed: 查询执行失败
+        /// - error.NoRows: 查询结果为空（不应该发生）
+        ///
+        /// 示例:
+        /// ```zig
+        /// const count = try query.where("age > $1", .{18}).count();
+        /// ```
+        pub fn count(self: *Self) !usize {
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
+
+            // SELECT COUNT(
+            try buf.appendSlice(self.allocator, "SELECT COUNT(");
+
+            // DISTINCT
+            if (self.distinct_value) {
+                try buf.appendSlice(self.allocator, "DISTINCT ");
+            }
+
+            // 列选择
+            if (self.columns.items.len > 0) {
+                // 对于 DISTINCT 多列，PostgreSQL 需要使用 (col1, col2) 语法
+                if (self.distinct_value and self.columns.items.len > 1) {
+                    try buf.appendSlice(self.allocator, "(");
+                    for (self.columns.items, 0..) |col, i| {
+                        if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                        try buf.appendSlice(self.allocator, col);
+                    }
+                    try buf.appendSlice(self.allocator, ")");
+                } else {
+                    // 单列或非 DISTINCT
+                    try buf.appendSlice(self.allocator, self.columns.items[0]);
+                }
+            } else {
+                try buf.appendSlice(self.allocator, "*");
+            }
+
+            try buf.appendSlice(self.allocator, ") FROM ");
+            try buf.appendSlice(self.allocator, self.table_name);
+
+            // WHERE 子句
+            if (self.where_clauses.items.len > 0) {
+                try buf.appendSlice(self.allocator, " WHERE ");
+                for (self.where_clauses.items, 0..) |clause, i| {
+                    if (i > 0) {
+                        switch (clause.operator) {
+                            .and_op => try buf.appendSlice(self.allocator, " AND "),
+                            .or_op => try buf.appendSlice(self.allocator, " OR "),
+                        }
+                    }
+                    try buf.appendSlice(self.allocator, clause.condition);
+                }
+            }
+
+            const query_str = try buf.toOwnedSlice(self.allocator);
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            for (self.where_clauses.items) |clause| {
+                try all_args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 执行查询
+            var result = try self.db.query(query_str, all_args.items);
+            defer result.close();
+            defer result.rows.deinit();
+
+            // 获取第一行
+            const first_row = try result.rows.next();
+            if (first_row == null) return error.NoRows;
+
+            var row = first_row.?;
+
+            // 提取 count 值（第一列）
+            const count_value = row.get(i64, 0);
+            return @intCast(count_value);
+        }
+
         /// 执行查询并扫描多条记录
         ///
         /// 执行 SQL 查询,返回所有结果行映射到的结构体数组。
@@ -457,7 +551,6 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const QueryArg {
 /// const sql = try query.build();
 /// ```
 pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
-    _ = T; // TODO: 使用类型参数进行反射
     const DBType = db_mod.DB(dialect);
 
     return struct {
@@ -746,7 +839,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 执行插入查询
-        pub fn exec(self: *Self) !void {
+        pub fn exec(self: *Self) !InsertResult {
             const query_str = try self.build();
             defer self.allocator.free(query_str);
 
@@ -759,8 +852,60 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             // 执行查询
-            const result = try self.db.exec(query_str, all_args.items);
+            try self.db.exec(query_str, all_args.items);
+
+            // 返回结果
+            // 注意: PostgreSQL 的 last_insert_id 需要通过 RETURNING 获取
+            return InsertResult{
+                .rows_affected = self.values_list.items.len,
+                .last_insert_id = null,
+            };
+        }
+
+        /// 执行插入并返回插入的数据 (仅 PostgreSQL/SQLite 支持 RETURNING)
+        ///
+        /// ## 参数
+        /// - dest: 目标 ArrayList,用于存储返回的数据
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var inserted_users = std.ArrayList(User){};
+        /// defer inserted_users.deinit(allocator);
+        ///
+        /// try query
+        ///     .value(.{ .name = "Alice", .email = "alice@example.com" })
+        ///     .returning(&.{"*"})
+        ///     .execReturning(&inserted_users);
+        ///
+        /// std.debug.print("插入的用户 ID: {}\n", .{inserted_users.items[0].id});
+        /// ```
+        pub fn execReturning(self: *Self, dest: *std.ArrayList(T)) !void {
+            // 编译时检查方言是否支持 RETURNING
+            if (comptime !dialect.supportsReturning()) {
+                @compileError("RETURNING is not supported by " ++ @tagName(dialect));
+            }
+
+            if (self.returning_columns == null) {
+                return error.NoReturningColumns;
+            }
+
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            for (self.values_list.items) |row_values| {
+                try all_args.appendSlice(self.allocator, row_values);
+            }
+
+            // 执行查询并获取结果
+            const result = try self.db.query(query_str, all_args.items);
             defer result.close();
+
+            // 扫描结果到目标 ArrayList
+            try self.db.scanRows(T, &result.rows, dest);
         }
     };
 }

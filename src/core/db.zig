@@ -796,6 +796,31 @@ pub fn DB(comptime dialect: Dialect) type {
             return DropTableQuery(T, dialect).init(self.allocator, self);
         }
 
+        /// 创建 DROP INDEX 查询构建器
+        ///
+        /// ## 参数
+        /// - `T`: 表类型（用于保持 API 一致性，实际 DROP INDEX 不需要表名）
+        ///
+        /// ## 返回值
+        /// 返回 DropIndexQuery 实例指针
+        ///
+        /// ## 错误
+        /// - `error.OutOfMemory`: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var drop_idx = try db.newDropIndex(User);
+        /// defer drop_idx.deinit();
+        ///
+        /// try drop_idx
+        ///     .index("idx_users_email")
+        ///     .ifExists()
+        ///     .exec();
+        /// ```
+        pub fn newDropIndex(self: *Self, comptime T: type) !*DropIndexQuery(T, dialect) {
+            return DropIndexQuery(T, dialect).init(self.allocator, self);
+        }
+
         /// 创建 CREATE INDEX 查询构建器
         ///
         /// ## 参数
@@ -842,29 +867,6 @@ pub fn DB(comptime dialect: Dialect) type {
         /// ```
         pub fn newCreateIndex(self: *Self, comptime T: type) !*CreateIndexQuery(T, dialect) {
             return CreateIndexQuery(T, dialect).init(self.allocator, self);
-        }
-
-        /// 创建 DROP INDEX 查询构建器
-        ///
-        /// ## 参数
-        /// - T: 模型类型（自动提取表名）
-        /// - index_name: 索引名
-        ///
-        /// ## 示例
-        /// ```zig
-        /// const User = struct {
-        ///     id: i64,
-        ///     pub const table_name = "users";
-        /// };
-        ///
-        /// var query = try db.newDropIndex(User, "idx_email");
-        /// defer query.deinit();
-        ///
-        /// _ = query.ifExists();
-        /// try query.exec();
-        /// ```
-        pub fn newDropIndex(self: *Self, comptime T: type, index_name: []const u8) !*DropIndexQuery(T, dialect) {
-            return DropIndexQuery(T, dialect).init(self.allocator, self, index_name);
         }
 
         // ========== Raw SQL Query ==========

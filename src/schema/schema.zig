@@ -840,3 +840,148 @@ test "generateColumnDefinitions: 完整示例" {
     try testing.expect(std.mem.indexOf(u8, columns_sql, "status TEXT NOT NULL DEFAULT 'active'") != null);
     try testing.expect(std.mem.indexOf(u8, columns_sql, "created_at BIGINT NOT NULL DEFAULT CURRENT_TIMESTAMP") != null);
 }
+
+/// DropIndexQuery - DROP INDEX 查询构建器
+///
+/// 提供类型安全的 DROP INDEX DDL 语句构建功能。
+///
+/// ## 功能特性
+/// - 支持 IF EXISTS 子句（幂等性删除）
+/// - 支持 CASCADE 选项（级联删除依赖对象）
+/// - 链式 API 调用
+/// - 编译时类型安全
+///
+/// ## 使用示例
+/// ```zig
+/// var drop_idx = try db.newDropIndex(User);
+/// defer drop_idx.deinit();
+///
+/// try drop_idx
+///     .index("idx_users_email")
+///     .ifExists()
+///     .exec();
+/// ```
+///
+/// 生成的 SQL: `DROP INDEX IF EXISTS idx_users_email`
+pub fn DropIndexQuery(comptime T: type, comptime dialect: dialect_module.Dialect) type {
+    _ = T; // 类型参数用于与其他 Query 保持一致,实际 DROP INDEX 不需要表名
+    _ = dialect; // 方言参数保持 API 一致性
+
+    return struct {
+        const Self = @This();
+        const Allocator = std.mem.Allocator;
+
+        allocator: Allocator,
+        db: *@import("../core/db.zig").DB,
+        index_name: ?[]const u8,
+        if_exists_flag: bool,
+        cascade_flag: bool,
+
+        /// 初始化 DropIndexQuery
+        pub fn init(allocator: Allocator, db: *@import("../core/db.zig").DB) !*Self {
+            const query = try allocator.create(Self);
+            query.* = .{
+                .allocator = allocator,
+                .db = db,
+                .index_name = null,
+                .if_exists_flag = false,
+                .cascade_flag = false,
+            };
+            return query;
+        }
+
+        /// 指定要删除的索引名称
+        ///
+        /// ## 参数
+        /// - `name`: 索引名称
+        ///
+        /// ## 返回值
+        /// 返回 self 指针支持链式调用
+        pub fn index(self: *Self, name: []const u8) *Self {
+            self.index_name = name;
+            return self;
+        }
+
+        /// 添加 IF EXISTS 子句
+        ///
+        /// 如果索引不存在,不会抛出错误,静默成功。
+        /// 适用于幂等性脚本(可重复执行)。
+        ///
+        /// ## 返回值
+        /// 返回 self 指针支持链式调用
+        pub fn ifExists(self: *Self) *Self {
+            self.if_exists_flag = true;
+            return self;
+        }
+
+        /// 添加 CASCADE 选项
+        ///
+        /// 级联删除依赖于该索引的对象。
+        /// 注意:PostgreSQL 中很少有对象依赖索引,此选项较少使用。
+        ///
+        /// ## 返回值
+        /// 返回 self 指针支持链式调用
+        pub fn cascade(self: *Self) *Self {
+            self.cascade_flag = true;
+            return self;
+        }
+
+        /// 构建 DROP INDEX SQL 语句
+        ///
+        /// ## 返回值
+        /// 返回分配的 SQL 字符串,调用者负责使用 allocator.free() 释放
+        ///
+        /// ## 错误
+        /// - `error.IndexNameRequired`: index_name 未设置
+        /// - `error.OutOfMemory`: 内存分配失败
+        pub fn build(self: *Self) ![]const u8 {
+            if (self.index_name == null) {
+                return error.IndexNameRequired;
+            }
+
+            var sql_buf: std.ArrayList(u8) = .{};
+            errdefer sql_buf.deinit(self.allocator);
+
+            try sql_buf.appendSlice(self.allocator, "DROP INDEX ");
+
+            if (self.if_exists_flag) {
+                try sql_buf.appendSlice(self.allocator, "IF EXISTS ");
+            }
+
+            try sql_buf.appendSlice(self.allocator, self.index_name.?);
+
+            if (self.cascade_flag) {
+                try sql_buf.appendSlice(self.allocator, " CASCADE");
+            }
+
+            defer sql_buf.deinit(self.allocator);
+            return self.allocator.dupe(u8, sql_buf.items);
+        }
+
+        /// 执行 DROP INDEX DDL 语句
+        ///
+        /// ## 错误
+        /// - `error.IndexNameRequired`: index_name 未设置
+        /// - `error.OutOfMemory`: 内存分配失败
+        /// - 数据库连接相关错误
+        pub fn exec(self: *Self) !void {
+            if (self.index_name == null) {
+                return error.IndexNameRequired;
+            }
+
+            const sql = try self.build();
+            defer self.allocator.free(sql);
+
+            // TODO: 执行 DDL - 等待真实数据库连接集成
+            // 示例: try self.db.conn.execute(sql);
+            // 当前只是占位符实现,避免编译器警告
+            if (sql.len == 0) return error.EmptySQL;
+        }
+
+        /// 释放资源
+        pub fn deinit(self: *Self) void {
+            // 释放 Query 结构体本身
+            self.allocator.destroy(self);
+        }
+    };
+}

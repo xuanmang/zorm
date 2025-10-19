@@ -27,6 +27,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+    _ = allocator; // 预留给未来的数据库连接使用
 
     std.debug.print("=== ZORM DeleteQuery 示例 ===\n\n", .{});
 

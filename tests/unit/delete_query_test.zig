@@ -26,8 +26,6 @@ const User = struct {
 };
 
 test "DeleteQuery: 基本实例化" {
-    const allocator = testing.allocator;
-
     // Mock DB (仅用于类型检查)
     const PostgresDB = zorm.DB(.postgresql);
     _ = PostgresDB; // 暂时不实例化，只测试类型
@@ -48,8 +46,6 @@ test "DeleteQuery: DeleteResult 结构" {
 }
 
 test "DeleteQuery: WHERE 条件测试" {
-    const allocator = testing.allocator;
-
     // 测试 WHERE 子句结构
     const WhereClause = zorm.WhereClause;
 
@@ -66,8 +62,6 @@ test "DeleteQuery: WHERE 条件测试" {
 }
 
 test "DeleteQuery: WHERE 多条件 (AND/OR)" {
-    const allocator = testing.allocator;
-
     const WhereClause = zorm.WhereClause;
 
     var args1 = [_]zorm.QueryArg{zorm.QueryArg.fromValue("inactive")};
@@ -89,8 +83,6 @@ test "DeleteQuery: WHERE 多条件 (AND/OR)" {
 }
 
 test "DeleteQuery: 参数类型测试" {
-    const allocator = testing.allocator;
-
     // 测试各种参数类型
     const arg_int = zorm.QueryArg.fromValue(@as(i64, 42));
     const arg_str = zorm.QueryArg.fromValue("test@example.com");

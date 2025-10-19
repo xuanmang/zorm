@@ -59,6 +59,12 @@ pub const schema = struct {
     pub const MigrationManager = @import("schema/migration.zig").MigrationManager;
     pub const Direction = @import("schema/migration.zig").Direction;
     pub const MigrationStatus = @import("schema/migration.zig").MigrationStatus;
+    // Story 3.2: Schema Field Customization
+    pub const FieldSchema = @import("schema/schema.zig").FieldSchema;
+    pub const hasSchemaConfig = @import("schema/schema.zig").hasSchemaConfig;
+    pub const getFieldSchema = @import("schema/schema.zig").getFieldSchema;
+    pub const generateColumnDefinition = @import("schema/schema.zig").generateColumnDefinition;
+    pub const generateColumnDefinitions = @import("schema/schema.zig").generateColumnDefinitions;
 };
 pub const driver = struct {
     pub const postgres = @import("driver/postgres.zig");

@@ -9,6 +9,27 @@ const std = @import("std");
 const dialect_module = @import("../dialect/dialect.zig");
 
 /// 列类型
+/// 字段 Schema 配置
+/// 用于在结构体中通过 comptime 定义字段的数据库属性
+pub const FieldSchema = struct {
+    /// 自定义列名（如果不指定，使用字段名）
+    column_name: ?[]const u8 = null,
+    /// 显式指定 SQL 类型（覆盖自动推断）
+    sql_type: ?[]const u8 = null,
+    /// 主键标记
+    primary_key: bool = false,
+    /// 自增标记（PostgreSQL 使用 SERIAL/BIGSERIAL）
+    auto_increment: bool = false,
+    /// 唯一约束
+    unique: bool = false,
+    /// 默认值表达式
+    default: ?[]const u8 = null,
+    /// CHECK 约束表达式
+    check: ?[]const u8 = null,
+    /// 显式 NOT NULL 控制（如果不指定，根据类型是否可选自动判断）
+    not_null: ?bool = null,
+};
+
 pub const ColumnType = enum {
     int,
     bigint,
@@ -185,6 +206,157 @@ fn isAutoIncrement(comptime field_name: []const u8, comptime ZigType: type) bool
         ZigType;
 
     return @typeInfo(actual_type) == .int;
+}
+
+/// 检查类型是否有 schema 配置
+pub fn hasSchemaConfig(comptime T: type) bool {
+    return @hasDecl(T, "schema");
+}
+
+/// 获取字段的 Schema 配置
+/// 如果字段没有配置或结构体没有 schema 声明，返回默认的 FieldSchema
+pub fn getFieldSchema(comptime T: type, comptime field_name: []const u8) FieldSchema {
+    if (!@hasDecl(T, "schema")) {
+        return .{};
+    }
+
+    const schema_config = @field(T, "schema");
+    const schema_type = @TypeOf(schema_config);
+
+    if (@hasField(schema_type, field_name)) {
+        const field_config = @field(schema_config, field_name);
+        // 将匿名结构体转换为 FieldSchema
+        return .{
+            .column_name = if (@hasField(@TypeOf(field_config), "column_name")) field_config.column_name else null,
+            .sql_type = if (@hasField(@TypeOf(field_config), "sql_type")) field_config.sql_type else null,
+            .primary_key = if (@hasField(@TypeOf(field_config), "primary_key")) field_config.primary_key else false,
+            .auto_increment = if (@hasField(@TypeOf(field_config), "auto_increment")) field_config.auto_increment else false,
+            .unique = if (@hasField(@TypeOf(field_config), "unique")) field_config.unique else false,
+            .default = if (@hasField(@TypeOf(field_config), "default")) field_config.default else null,
+            .check = if (@hasField(@TypeOf(field_config), "check")) field_config.check else null,
+            .not_null = if (@hasField(@TypeOf(field_config), "not_null")) field_config.not_null else null,
+        };
+    }
+
+    return .{};
+}
+
+/// 生成单个列的定义 SQL
+/// 综合考虑字段类型和 Schema 配置
+pub fn generateColumnDefinition(
+    allocator: std.mem.Allocator,
+    comptime field_name: []const u8,
+    comptime field_type: type,
+    comptime schema_cfg: FieldSchema,
+) ![]const u8 {
+    // 列名：优先使用配置的列名,否则使用字段名
+    const col_name = schema_cfg.column_name orelse field_name;
+
+    // 判断类型是否可选
+    const is_optional = @typeInfo(field_type) == .optional;
+    const base_type = if (is_optional) @typeInfo(field_type).optional.child else field_type;
+
+    // SQL 类型：优先使用配置的类型,否则自动推断
+    var sql_type: []const u8 = undefined;
+    if (schema_cfg.sql_type) |explicit_type| {
+        sql_type = explicit_type;
+    } else if (schema_cfg.auto_increment) {
+        // AUTO_INCREMENT: i64 -> BIGSERIAL, i32 -> SERIAL
+        const type_info = @typeInfo(base_type);
+        if (type_info == .int) {
+            sql_type = if (type_info.int.bits == 64) "BIGSERIAL" else "SERIAL";
+        } else {
+            sql_type = columnTypeToSQL(inferColumnType(base_type));
+        }
+    } else {
+        sql_type = columnTypeToSQL(inferColumnType(base_type));
+    }
+
+    // 构建约束列表 (Zig 0.15.2 新 ArrayList API)
+    var constraints: std.ArrayList([]const u8) = .{};
+    defer constraints.deinit(allocator);
+
+    // 跟踪需要释放的动态分配字符串
+    var allocated_constraints: std.ArrayList([]const u8) = .{};
+    defer {
+        for (allocated_constraints.items) |item| {
+            allocator.free(item);
+        }
+        allocated_constraints.deinit(allocator);
+    }
+
+    // PRIMARY KEY
+    if (schema_cfg.primary_key) {
+        try constraints.append(allocator, "PRIMARY KEY");
+    }
+
+    // UNIQUE
+    if (schema_cfg.unique) {
+        try constraints.append(allocator, "UNIQUE");
+    }
+
+    // NOT NULL (SERIAL/BIGSERIAL 自动 NOT NULL,不需要额外添加)
+    const not_null = schema_cfg.not_null orelse !is_optional;
+    if (not_null and !schema_cfg.auto_increment) {
+        try constraints.append(allocator, "NOT NULL");
+    }
+
+    // DEFAULT
+    if (schema_cfg.default) |default_val| {
+        const default_clause = try std.fmt.allocPrint(allocator, "DEFAULT {s}", .{default_val});
+        try allocated_constraints.append(allocator, default_clause);
+        try constraints.append(allocator, default_clause);
+    }
+
+    // CHECK
+    if (schema_cfg.check) |check_expr| {
+        const check_clause = try std.fmt.allocPrint(allocator, "CHECK ({s})", .{check_expr});
+        try allocated_constraints.append(allocator, check_clause);
+        try constraints.append(allocator, check_clause);
+    }
+
+    // 组装完整的列定义
+    if (constraints.items.len > 0) {
+        const constraints_str = try std.mem.join(allocator, " ", constraints.items);
+        defer allocator.free(constraints_str);
+        return try std.fmt.allocPrint(allocator, "{s} {s} {s}", .{ col_name, sql_type, constraints_str });
+    } else {
+        return try std.fmt.allocPrint(allocator, "{s} {s}", .{ col_name, sql_type });
+    }
+}
+
+/// 将 ColumnType 转换为 SQL 类型字符串 (PostgreSQL)
+fn columnTypeToSQL(col_type: ColumnType) []const u8 {
+    return col_type.sqlType(.postgresql);
+}
+
+/// 生成所有列的定义
+pub fn generateColumnDefinitions(
+    allocator: std.mem.Allocator,
+    comptime T: type,
+) ![]const u8 {
+    const type_info = @typeInfo(T);
+    if (type_info != .@"struct") {
+        @compileError("generateColumnDefinitions requires a struct type, got " ++ @typeName(T));
+    }
+
+    const fields = type_info.@"struct".fields;
+    var column_defs: std.ArrayList([]const u8) = .{};
+    defer {
+        // 释放所有列定义字符串
+        for (column_defs.items) |item| {
+            allocator.free(item);
+        }
+        column_defs.deinit(allocator);
+    }
+
+    inline for (fields) |field| {
+        const schema_cfg = comptime getFieldSchema(T, field.name);
+        const col_def = try generateColumnDefinition(allocator, field.name, field.type, schema_cfg);
+        try column_defs.append(allocator, col_def);
+    }
+
+    return try std.mem.join(allocator, ",\n    ", column_defs.items);
 }
 
 // =============================================================================
@@ -427,4 +599,244 @@ test "多种类型综合测试" {
     // description 列 (可空)
     try testing.expectEqual(ColumnType.text, meta.columns[6].type);
     try testing.expectEqual(true, meta.columns[6].nullable);
+}
+
+// =============================================================================
+// FieldSchema 和配置功能测试
+// =============================================================================
+
+test "hasSchemaConfig: 检测 schema 配置存在性" {
+    const WithSchema = struct {
+        id: i64,
+        name: []const u8,
+
+        pub const schema = .{
+            .id = .{ .primary_key = true },
+        };
+    };
+
+    const WithoutSchema = struct {
+        id: i64,
+        name: []const u8,
+    };
+
+    try testing.expectEqual(true, comptime hasSchemaConfig(WithSchema));
+    try testing.expectEqual(false, comptime hasSchemaConfig(WithoutSchema));
+}
+
+test "getFieldSchema: 读取字段配置" {
+    const User = struct {
+        id: i64,
+        username: []const u8,
+        email: []const u8,
+        age: i32,
+
+        pub const schema = .{
+            .id = .{ .primary_key = true, .auto_increment = true },
+            .username = .{ .unique = true, .sql_type = "VARCHAR(50)" },
+            .email = .{ .unique = true },
+        };
+    };
+
+    // 测试有配置的字段
+    const id_schema = comptime getFieldSchema(User, "id");
+    try testing.expectEqual(true, id_schema.primary_key);
+    try testing.expectEqual(true, id_schema.auto_increment);
+
+    const username_schema = comptime getFieldSchema(User, "username");
+    try testing.expectEqual(true, username_schema.unique);
+    try testing.expectEqualStrings("VARCHAR(50)", username_schema.sql_type.?);
+
+    // 测试没有配置的字段（应返回默认值）
+    const age_schema = comptime getFieldSchema(User, "age");
+    try testing.expectEqual(false, age_schema.primary_key);
+    try testing.expectEqual(false, age_schema.unique);
+    try testing.expectEqual(null, age_schema.sql_type);
+}
+
+test "generateColumnDefinition: 自定义列名" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "user_name",
+        []const u8,
+        .{ .column_name = "username" },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.startsWith(u8, col_def, "username TEXT"));
+}
+
+test "generateColumnDefinition: 显式 SQL 类型" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "username",
+        []const u8,
+        .{ .sql_type = "VARCHAR(50)" },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.startsWith(u8, col_def, "username VARCHAR(50)"));
+}
+
+test "generateColumnDefinition: UNIQUE 约束" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "email",
+        []const u8,
+        .{ .unique = true },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.indexOf(u8, col_def, "UNIQUE") != null);
+    try testing.expect(std.mem.indexOf(u8, col_def, "NOT NULL") != null);
+}
+
+test "generateColumnDefinition: DEFAULT 值" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "status",
+        []const u8,
+        .{ .default = "'active'" },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.indexOf(u8, col_def, "DEFAULT 'active'") != null);
+}
+
+test "generateColumnDefinition: CHECK 约束" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "age",
+        i32,
+        .{ .check = "age >= 0 AND age <= 150" },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.indexOf(u8, col_def, "CHECK (age >= 0 AND age <= 150)") != null);
+}
+
+test "generateColumnDefinition: AUTO_INCREMENT (SERIAL)" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "id",
+        i32,
+        .{ .primary_key = true, .auto_increment = true },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.indexOf(u8, col_def, "SERIAL") != null);
+    try testing.expect(std.mem.indexOf(u8, col_def, "PRIMARY KEY") != null);
+}
+
+test "generateColumnDefinition: AUTO_INCREMENT (BIGSERIAL)" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "id",
+        i64,
+        .{ .primary_key = true, .auto_increment = true },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.indexOf(u8, col_def, "BIGSERIAL") != null);
+    try testing.expect(std.mem.indexOf(u8, col_def, "PRIMARY KEY") != null);
+}
+
+test "generateColumnDefinition: 可选类型自动 NULL" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "description",
+        ?[]const u8,
+        .{},
+    );
+    defer allocator.free(col_def);
+
+    // 可选类型不应该有 NOT NULL
+    try testing.expect(std.mem.indexOf(u8, col_def, "NOT NULL") == null);
+}
+
+test "generateColumnDefinition: 非可选类型自动 NOT NULL" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "name",
+        []const u8,
+        .{},
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.indexOf(u8, col_def, "NOT NULL") != null);
+}
+
+test "generateColumnDefinition: 综合约束" {
+    const allocator = testing.allocator;
+
+    const col_def = try generateColumnDefinition(
+        allocator,
+        "username",
+        []const u8,
+        .{
+            .column_name = "user_name",
+            .sql_type = "VARCHAR(50)",
+            .unique = true,
+            .check = "LENGTH(user_name) >= 3",
+        },
+    );
+    defer allocator.free(col_def);
+
+    try testing.expect(std.mem.startsWith(u8, col_def, "user_name VARCHAR(50)"));
+    try testing.expect(std.mem.indexOf(u8, col_def, "UNIQUE") != null);
+    try testing.expect(std.mem.indexOf(u8, col_def, "NOT NULL") != null);
+    try testing.expect(std.mem.indexOf(u8, col_def, "CHECK (LENGTH(user_name) >= 3)") != null);
+}
+
+test "generateColumnDefinitions: 完整示例" {
+    const allocator = testing.allocator;
+
+    const User = struct {
+        id: i64,
+        username: []const u8,
+        email: []const u8,
+        age: i32,
+        status: []const u8,
+        created_at: i64,
+
+        pub const table_name = "users";
+
+        pub const schema = .{
+            .id = .{ .primary_key = true, .auto_increment = true },
+            .username = .{ .unique = true, .sql_type = "VARCHAR(50)" },
+            .email = .{ .unique = true },
+            .age = .{ .check = "age >= 0 AND age <= 150" },
+            .status = .{ .default = "'active'" },
+            .created_at = .{ .default = "CURRENT_TIMESTAMP" },
+        };
+    };
+
+    const columns_sql = try generateColumnDefinitions(allocator, User);
+    defer allocator.free(columns_sql);
+
+    // 验证包含所有列
+    try testing.expect(std.mem.indexOf(u8, columns_sql, "id BIGSERIAL PRIMARY KEY") != null);
+    try testing.expect(std.mem.indexOf(u8, columns_sql, "username VARCHAR(50) UNIQUE NOT NULL") != null);
+    try testing.expect(std.mem.indexOf(u8, columns_sql, "email TEXT UNIQUE NOT NULL") != null);
+    try testing.expect(std.mem.indexOf(u8, columns_sql, "age INTEGER NOT NULL CHECK (age >= 0 AND age <= 150)") != null);
+    try testing.expect(std.mem.indexOf(u8, columns_sql, "status TEXT NOT NULL DEFAULT 'active'") != null);
+    try testing.expect(std.mem.indexOf(u8, columns_sql, "created_at BIGINT NOT NULL DEFAULT CURRENT_TIMESTAMP") != null);
 }

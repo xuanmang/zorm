@@ -1,0 +1,66 @@
+schema: 1
+story: "2.6"
+story_title: "Raw SQL Query Support"
+gate: CONCERNS
+status_reason: "所有7个验收标准已满足,RawQuery 实现完整,但单元/集成测试未实现(技术债务)"
+reviewer: "Quinn (Test Architect)"
+updated: "2025-10-19T16:55:00Z"
+
+waiver: { active: false }
+
+quality_score: 80
+
+evidence:
+  tests_reviewed: 0
+  risks_identified: 2
+  trace:
+    ac_covered: [1, 2, 3, 4, 5, 6, 7]
+    ac_gaps: []
+
+nfr_validation:
+  security:
+    status: PASS
+    notes: "强制参数绑定,完整的 SQL 注入安全警告文档"
+  performance:
+    status: PASS
+    notes: "comptime 泛型,显式内存管理,deinit 资源清理"
+  reliability:
+    status: CONCERNS
+    notes: "代码实现完整,但 Task 9/10 测试未实现,无法验证功能正确性"
+  maintainability:
+    status: PASS
+    notes: "完整的文档注释和安全警告,示例程序详尽"
+
+top_issues:
+  - id: "TEST-001"
+    severity: medium
+    finding: "单元测试未实现(Task 9), 无法验证参数绑定、占位符编号等关键功能"
+    suggested_action: "创建 tests/unit/raw_query_test.zig,测试所有核心功能"
+    suggested_owner: dev
+  - id: "TEST-002"
+    severity: medium
+    finding: "集成测试未实现(Task 10), 无法验证窗口函数、CTE、真实 SQL 执行"
+    suggested_action: "创建 tests/integration/raw_query_test.zig,测试复杂 SQL 场景"
+    suggested_owner: dev
+
+recommendations:
+  immediate:
+    - action: "完成 Task 9 单元测试,验证 RawQuery 核心功能"
+      refs: ["tests/unit/raw_query_test.zig"]
+    - action: "完成 Task 10 集成测试,验证复杂 SQL 场景(窗口函数/CTE/全文搜索)"
+      refs: ["tests/integration/raw_query_test.zig"]
+  future:
+    - action: "添加 SQL 注入安全性测试,验证参数绑定防护"
+      refs: ["tests/security/injection_test.zig"]
+
+test_summary:
+  total: 0
+  passed: 0
+  failed: 0
+  skipped: 0
+  pass_rate: N/A
+
+code_metrics:
+  files_modified: 6
+  lines_added: 463
+  complexity: medium

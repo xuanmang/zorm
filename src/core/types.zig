@@ -25,6 +25,49 @@ const std = @import("std");
 /// // fields[0].name == "id"
 /// // fields[0].type == i64
 /// ```
+
+// ============ PostgreSQL 特有类型定义 (Story 3.6) ============
+
+/// JSONB 类型包装器
+///
+/// 用于存储 PostgreSQL JSONB 数据。
+/// 在 Zig 侧以 JSON 字符串形式存储。
+///
+/// ## 示例
+/// ```zig
+/// const metadata = JSONB{ .data = "{\"author\": \"John\", \"draft\": false}" };
+/// ```
+pub const JSONB = struct {
+    data: []const u8,
+
+    /// 从 JSON 字符串创建 JSONB 实例
+    pub fn init(json_string: []const u8) JSONB {
+        return .{ .data = json_string };
+    }
+};
+
+/// UUID 类型
+///
+/// 表示 PostgreSQL UUID (128 位唯一标识符)。
+/// 使用 16 字节数组存储。
+///
+/// ## 示例
+/// ```zig
+/// const uuid: UUID = [_]u8{0x55, 0x0e, 0x84, 0x00, ...};
+/// ```
+pub const UUID = [16]u8;
+
+/// TIMESTAMP WITH TIME ZONE 类型
+///
+/// 使用 Unix 时间戳 (i64) 存储带时区的时间戳。
+/// 单位: 秒或毫秒 (根据应用需求)
+pub const TimestampTz = i64;
+
+/// TIMESTAMP WITHOUT TIME ZONE 类型
+///
+/// 使用 i64 存储不带时区的时间戳。
+pub const Timestamp = i64;
+
 pub fn getFields(comptime T: type) []const std.builtin.Type.StructField {
     const type_info = @typeInfo(T);
 
@@ -101,6 +144,12 @@ pub fn getTableName(comptime T: type) []const u8 {
 /// }
 /// ```
 pub fn zigToSQLType(comptime T: type) []const u8 {
+    // 优先检查 PostgreSQL 特有类型
+    if (T == JSONB) return "JSONB";
+    if (T == UUID) return "UUID";
+    if (T == TimestampTz) return "TIMESTAMP WITH TIME ZONE";
+    if (T == Timestamp) return "TIMESTAMP WITHOUT TIME ZONE";
+
     return switch (@typeInfo(T)) {
         // 整数类型
         .int => |info| {
@@ -136,16 +185,25 @@ pub fn zigToSQLType(comptime T: type) []const u8 {
         // 布尔类型
         .bool => "BOOLEAN",
 
-        // 指针类型 (字符串)
+        // 指针类型 (字符串和数组)
         .pointer => |info| {
+            // 字符串类型: []const u8 或 []u8
             if (info.child == u8) {
-                // []const u8 或 []u8 → TEXT
                 return "TEXT";
             }
+
+            // 切片类型 (数组): []T
+            if (info.size == .Slice) {
+                // 递归映射元素类型
+                const element_sql_type = zigToSQLType(info.child);
+                // 连接类型名和 [] 后缀
+                return element_sql_type ++ "[]";
+            }
+
             @compileError(
                 "不支持的指针类型: " ++ @typeName(T) ++ "\n" ++
-                    "仅支持 []const u8 (TEXT) 类型\n" ++
-                    "提示:对于字符串,使用 []const u8",
+                    "仅支持 []const u8 (TEXT) 和切片数组类型\n" ++
+                    "提示:对于字符串,使用 []const u8;对于数组,使用 []T",
             );
         },
 
@@ -155,17 +213,19 @@ pub fn zigToSQLType(comptime T: type) []const u8 {
             return zigToSQLType(info.child);
         },
 
-        // 数组类型 (Story 3.6)
-        .array => @compileError(
-            "数组类型映射将在 Story 3.6 中实现\n" ++
-                "类型: " ++ @typeName(T),
-        ),
+        // 数组类型 (固定大小)
+        .array => |info| {
+            // 固定大小数组也映射为 PostgreSQL 数组
+            const element_sql_type = zigToSQLType(info.child);
+            return element_sql_type ++ "[]";
+        },
 
         // 其他不支持的类型
         else => @compileError(
             "不支持的 Zig 类型: " ++ @typeName(T) ++ "\n" ++
                 "支持的类型:i8, i16, i32, i64, u8, u16, u32, u64, " ++
-                "f32, f64, bool, []const u8, ?T\n" ++
+                "f32, f64, bool, []const u8, []T (数组), ?T, " ++
+                "JSONB, UUID, TimestampTz, Timestamp\n" ++
                 "提示:使用基本类型或可选类型包装",
         ),
     };
@@ -257,6 +317,191 @@ pub fn validateType(comptime T: type) void {
 /// 如果是可选类型返回 true,否则返回 false
 pub fn isOptional(comptime field_type: type) bool {
     return @typeInfo(field_type) == .optional;
+}
+
+// ============ PostgreSQL 类型序列化和反序列化 (Story 3.6) ============
+
+/// 将 Zig 数组序列化为 PostgreSQL 数组字面量格式
+///
+/// ## 参数
+/// - `T`: 数组元素类型
+/// - `array`: 要序列化的数组切片
+/// - `allocator`: 内存分配器
+///
+/// ## 返回值
+/// PostgreSQL 数组字面量字符串 (调用者负责释放)
+///
+/// ## 错误
+/// - `error.OutOfMemory`: 内存分配失败
+///
+/// ## 示例
+/// ```zig
+/// const nums = &[_]i32{1, 2, 3};
+/// const result = try serializeArray(i32, nums, allocator);
+/// defer allocator.free(result);
+/// // result == "'{1,2,3}'"
+/// ```
+pub fn serializeArray(comptime T: type, array: []const T, allocator: std.mem.Allocator) ![]const u8 {
+    var buf: std.ArrayList(u8) = .{};
+    errdefer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "'{");
+
+    for (array, 0..) |item, i| {
+        if (i > 0) try buf.append(allocator, ',');
+
+        // 根据类型处理序列化
+        if (T == []const u8 or T == []u8) {
+            // 字符串需要引号和转义
+            try buf.append(allocator, '\"');
+            // 简化:直接添加字符串 (生产环境需要处理转义)
+            try buf.appendSlice(allocator, item);
+            try buf.append(allocator, '\"');
+        } else {
+            // 数字和其他类型直接格式化
+            const item_str = try std.fmt.allocPrint(allocator, "{any}", .{item});
+            defer allocator.free(item_str);
+            try buf.appendSlice(allocator, item_str);
+        }
+    }
+
+    try buf.appendSlice(allocator, "}'");
+
+    defer buf.deinit(allocator);
+    return allocator.dupe(u8, buf.items);
+}
+
+/// 将 PostgreSQL 数组字符串反序列化为 Zig ArrayList
+///
+/// ## 参数
+/// - `T`: 数组元素类型
+/// - `pg_array_str`: PostgreSQL 数组字面量字符串 (如 "{1,2,3}")
+/// - `allocator`: 内存分配器
+///
+/// ## 返回值
+/// 包含解析元素的 ArrayList (调用者负责释放)
+///
+/// ## 错误
+/// - `error.OutOfMemory`: 内存分配失败
+/// - `error.InvalidFormat`: 数组格式无效
+///
+/// ## 示例
+/// ```zig
+/// var result = try deserializeArray(i32, "{1,2,3}", allocator);
+/// defer result.deinit(allocator);
+/// // result.items == [1, 2, 3]
+/// ```
+pub fn deserializeArray(comptime T: type, pg_array_str: []const u8, allocator: std.mem.Allocator) !std.ArrayList(T) {
+    var result: std.ArrayList(T) = .{};
+    errdefer result.deinit(allocator);
+
+    // 移除前导 '{' 和尾部 '}'
+    if (pg_array_str.len < 2 or pg_array_str[0] != '{' or pg_array_str[pg_array_str.len - 1] != '}') {
+        return error.InvalidFormat;
+    }
+
+    const content = pg_array_str[1 .. pg_array_str.len - 1];
+    if (content.len == 0) {
+        return result; // 空数组
+    }
+
+    // 简化实现:按逗号分割
+    var iter = std.mem.splitScalar(u8, content, ',');
+    while (iter.next()) |item_str| {
+        const trimmed = std.mem.trim(u8, item_str, " \t\r\n");
+
+        if (T == []const u8 or T == []u8) {
+            // 字符串:移除引号
+            var value: []const u8 = trimmed;
+            if (value.len >= 2 and value[0] == '\"' and value[value.len - 1] == '\"') {
+                value = value[1 .. value.len - 1];
+            }
+            const duped = try allocator.dupe(u8, value);
+            try result.append(allocator, duped);
+        } else if (T == i32 or T == i64 or T == u32 or T == u64 or T == i16 or T == u16) {
+            // 整数解析
+            const value = try std.fmt.parseInt(T, trimmed, 10);
+            try result.append(allocator, value);
+        } else if (T == f32 or T == f64) {
+            // 浮点数解析
+            const value = try std.fmt.parseFloat(T, trimmed);
+            try result.append(allocator, value);
+        } else if (T == bool) {
+            // 布尔值解析
+            const value = std.mem.eql(u8, trimmed, "t") or std.mem.eql(u8, trimmed, "true");
+            try result.append(allocator, value);
+        } else {
+            @compileError("不支持的数组元素类型: " ++ @typeName(T));
+        }
+    }
+
+    return result;
+}
+
+/// 将 UUID 字节数组序列化为标准 UUID 字符串格式
+///
+/// ## 参数
+/// - `uuid`: 16 字节 UUID
+/// - `allocator`: 内存分配器
+///
+/// ## 返回值
+/// UUID 字符串 (如 "550e8400-e29b-41d4-a716-446655440000")
+///
+/// ## 错误
+/// - `error.OutOfMemory`: 内存分配失败
+///
+/// ## 示例
+/// ```zig
+/// const uuid: UUID = [_]u8{0x55, 0x0e, 0x84, 0x00, ...};
+/// const str = try uuidToString(uuid, allocator);
+/// defer allocator.free(str);
+/// ```
+pub fn uuidToString(uuid: UUID, allocator: std.mem.Allocator) ![]const u8 {
+    return std.fmt.allocPrint(allocator, "{x:0>2}{x:0>2}{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}-{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}{x:0>2}", .{
+        uuid[0],  uuid[1],  uuid[2],  uuid[3],
+        uuid[4],  uuid[5],  uuid[6],  uuid[7],
+        uuid[8],  uuid[9],  uuid[10], uuid[11],
+        uuid[12], uuid[13], uuid[14], uuid[15],
+    });
+}
+
+/// 将 UUID 字符串解析为字节数组
+///
+/// ## 参数
+/// - `uuid_str`: UUID 字符串 (可带或不带连字符)
+///
+/// ## 返回值
+/// 16 字节 UUID 数组
+///
+/// ## 错误
+/// - `error.InvalidFormat`: UUID 格式无效
+///
+/// ## 示例
+/// ```zig
+/// const uuid = try stringToUuid("550e8400-e29b-41d4-a716-446655440000");
+/// ```
+pub fn stringToUuid(uuid_str: []const u8) !UUID {
+    var result: UUID = undefined;
+    var byte_idx: usize = 0;
+
+    // 移除连字符版本
+    var i: usize = 0;
+    while (i < uuid_str.len and byte_idx < 16) : (i += 1) {
+        const c = uuid_str[i];
+        if (c == '-') continue; // 跳过连字符
+
+        // 需要两个十六进制字符
+        if (i + 1 >= uuid_str.len) return error.InvalidFormat;
+
+        const hex_str = uuid_str[i .. i + 2];
+        result[byte_idx] = std.fmt.parseInt(u8, hex_str, 16) catch return error.InvalidFormat;
+
+        byte_idx += 1;
+        i += 1; // 跳过第二个字符
+    }
+
+    if (byte_idx != 16) return error.InvalidFormat;
+    return result;
 }
 
 /// 事务隔离级别 (Story 2.5)

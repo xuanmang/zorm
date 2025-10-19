@@ -258,6 +258,26 @@ pub fn build(b: *std.Build) void {
     // 将类型测试添加到主测试步骤
     test_step.dependOn(&run_types_tests.step);
 
+    // Story 3.4: CREATE INDEX 测试
+    const create_index_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/unit/create_index_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    create_index_test_module.addImport("zorm", zorm_module);
+
+    const create_index_tests = b.addTest(.{
+        .root_module = create_index_test_module,
+    });
+
+    const run_create_index_tests = b.addRunArtifact(create_index_tests);
+    const create_index_test_step = b.step("test-create-index", "Run CREATE INDEX tests");
+    create_index_test_step.dependOn(&run_create_index_tests.step);
+
+    // 将 CREATE INDEX 测试添加到主测试步骤
+    test_step.dependOn(&run_create_index_tests.step);
+
     // Story 1.3: 列选择和 DISTINCT 测试
     const column_distinct_test_module = b.createModule(.{
         .root_source_file = b.path("tests/column_distinct_test.zig"),

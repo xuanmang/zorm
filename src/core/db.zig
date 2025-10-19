@@ -817,8 +817,31 @@ pub fn DB(comptime dialect: Dialect) type {
         /// _ = try query.column("email");
         /// try query.exec();
         /// ```
-        pub fn newCreateIndex(self: *Self, comptime T: type, index_name: []const u8) !*CreateIndexQuery(T, dialect) {
-            return CreateIndexQuery(T, dialect).init(self.allocator, self, index_name);
+        /// 创建 CREATE INDEX 查询构建器
+        ///
+        /// ## 参数
+        /// - T: 模型类型（自动提取表名）
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     email: []const u8,
+        ///     pub const table_name = "users";
+        /// };
+        ///
+        /// var query = try db.newCreateIndex(User);
+        /// defer query.deinit();
+        ///
+        /// try query
+        ///     .index("idx_users_email")
+        ///     .column("email")
+        ///     .unique()
+        ///     .ifNotExists()
+        ///     .exec();
+        /// ```
+        pub fn newCreateIndex(self: *Self, comptime T: type) !*CreateIndexQuery(T, dialect) {
+            return CreateIndexQuery(T, dialect).init(self.allocator, self);
         }
 
         /// 创建 DROP INDEX 查询构建器

@@ -135,6 +135,10 @@ pub const UpdateResult = @import("types.zig").UpdateResult; // Story 2.1
 pub const DeleteResult = @import("types.zig").DeleteResult; // Story 2.3
 pub const DeleteQuery = query.DeleteQuery;
 pub const CreateTableQuery = query.CreateTableQuery;
+// Story 3.3 & 3.4: DROP TABLE & CREATE INDEX Query Builders
+pub const DropTableQuery = query.DropTableQuery;
+pub const CreateIndexQuery = query.CreateIndexQuery;
+pub const DropIndexQuery = query.DropIndexQuery;
 // Story 2.6: Raw SQL Query Support
 pub const RawQuery = query.RawQuery;
 pub const RawResult = @import("types.zig").RawResult;

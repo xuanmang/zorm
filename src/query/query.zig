@@ -2249,15 +2249,16 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
         allocator: Allocator,
         db: *DBType,
         table_name: []const u8,
-        index_name: []const u8,
+        index_name: ?[]const u8,
         columns: std.ArrayList([]const u8),
-        unique_flag: bool = false,
-        if_not_exists_flag: bool = false,
+        unique_flag: bool,
+        if_not_exists_flag: bool,
+        where_condition: ?[]const u8,
 
         /// 初始化 CREATE INDEX 查询构建器
         ///
         /// 自动从模型类型 T 获取表名
-        pub fn init(allocator: Allocator, db: *DBType, index_name: []const u8) !*Self {
+        pub fn init(allocator: Allocator, db: *DBType) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
 
@@ -2268,10 +2269,11 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
                 .allocator = allocator,
                 .db = db,
                 .table_name = table_name,
-                .index_name = index_name,
+                .index_name = null,
                 .columns = .{},
                 .unique_flag = false,
                 .if_not_exists_flag = false,
+                .where_condition = null,
             };
 
             return self;
@@ -2283,26 +2285,47 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
             self.allocator.destroy(self);
         }
 
+        /// 指定索引名称
+        pub fn index(self: *Self, name: []const u8) *Self {
+            self.index_name = name;
+            return self;
+        }
+
+        /// 添加索引列（支持列名和表达式）
+        /// 可多次调用以创建复合索引
+        pub fn column(self: *Self, col_name: []const u8) !*Self {
+            try self.columns.append(self.allocator, col_name);
+            return self;
+        }
+
         /// 创建唯一索引
         pub fn unique(self: *Self) *Self {
             self.unique_flag = true;
             return self;
         }
 
-        /// 添加 IF NOT EXISTS 子句 (仅 PostgreSQL 和 SQLite 支持)
+        /// 添加 IF NOT EXISTS 子句
         pub fn ifNotExists(self: *Self) *Self {
             self.if_not_exists_flag = true;
             return self;
         }
 
-        /// 添加索引列
-        pub fn column(self: *Self, col_name: []const u8) !*Self {
-            try self.columns.append(self.allocator, col_name);
+        /// 添加部分索引条件（WHERE 子句）
+        pub fn where(self: *Self, condition: []const u8) *Self {
+            self.where_condition = condition;
             return self;
         }
 
         /// 构建 CREATE INDEX SQL 语句
         pub fn build(self: *Self) ![]const u8 {
+            // 参数验证
+            if (self.index_name == null) {
+                return error.IndexNameRequired;
+            }
+            if (self.columns.items.len == 0) {
+                return error.ColumnsRequired;
+            }
+
             var buf: std.ArrayList(u8) = .{};
             errdefer buf.deinit(self.allocator);
 
@@ -2314,12 +2337,12 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
             try buf.appendSlice(self.allocator, "INDEX ");
 
-            // IF NOT EXISTS 支持 (PostgreSQL 和 SQLite)
-            if (self.if_not_exists_flag and (dialect == .postgresql or dialect == .sqlite)) {
+            // IF NOT EXISTS 支持
+            if (self.if_not_exists_flag) {
                 try buf.appendSlice(self.allocator, "IF NOT EXISTS ");
             }
 
-            try buf.appendSlice(self.allocator, self.index_name);
+            try buf.appendSlice(self.allocator, self.index_name.?);
             try buf.appendSlice(self.allocator, " ON ");
             try buf.appendSlice(self.allocator, self.table_name);
             try buf.appendSlice(self.allocator, " (");
@@ -2331,6 +2354,12 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             try buf.appendSlice(self.allocator, ")");
+
+            // WHERE 子句（部分索引）
+            if (self.where_condition) |condition| {
+                try buf.appendSlice(self.allocator, " WHERE ");
+                try buf.appendSlice(self.allocator, condition);
+            }
 
             return buf.toOwnedSlice(self.allocator);
         }

@@ -532,6 +532,50 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const QueryArg {
     return result;
 }
 
+/// 替换 SQL 字符串中的占位符 (? -> $N)
+///
+/// 将通用占位符 "?" 替换为 PostgreSQL 的位置参数格式 "$N"
+///
+/// ## 参数
+/// - allocator: 内存分配器
+/// - sql: 原始 SQL 字符串
+/// - start_index: 起始参数索引（会被更新）
+///
+/// ## 返回
+/// 替换后的 SQL 字符串，调用者负责释放内存
+/// 替换 SQL 字符串中的占位符 (? -> $N)
+///
+/// 将通用占位符 "?" 替换为 PostgreSQL 的位置参数格式 "$N"
+///
+/// ## 参数
+/// - allocator: 内存分配器
+/// - sql: 原始 SQL 字符串
+/// - start_index: 起始参数索引
+///
+/// ## 返回
+/// 替换后的 SQL 字符串，调用者负责释放内存
+fn replacePlaceholders(allocator: Allocator, sql: []const u8, start_index: usize) ![]const u8 {
+    var result = std.ArrayList(u8){};
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    var current_index = start_index;
+
+    while (i < sql.len) : (i += 1) {
+        if (sql[i] == '?') {
+            // 替换 ? 为 $N
+            const placeholder = try std.fmt.allocPrint(allocator, "${d}", .{current_index});
+            defer allocator.free(placeholder);
+            try result.appendSlice(allocator, placeholder);
+            current_index += 1;
+        } else {
+            try result.append(allocator, sql[i]);
+        }
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 /// INSERT 查询构建器
 ///
 /// ## 参数
@@ -1096,6 +1140,184 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ```zig
         /// try query.setReturning(&.{"id", "updated_at"});
         /// ```
+        /// 添加 WHERE IN 条件 (批量匹配)
+        ///
+        /// 生成 WHERE column IN ($1, $2, $3, ...) 子句
+        ///
+        /// ## 参数
+        /// - column: 列名
+        /// - values: 值数组或切片
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const user_ids = [_]i64{ 1, 2, 3, 5, 8 };
+        /// try query.whereIn("id", &user_ids);
+        /// // 生成: WHERE id IN ($1, $2, $3, $4, $5)
+        /// ```
+        pub fn whereIn(self: *Self, column: []const u8, values: anytype) !*Self {
+            const ValuesType = @TypeOf(values);
+            const type_info = @typeInfo(ValuesType);
+
+            // 支持切片和数组
+            const values_slice = switch (type_info) {
+                .pointer => |ptr| if (ptr.size == .slice or ptr.size == .one) values else @compileError("whereIn requires a slice or array pointer"),
+                else => @compileError("whereIn requires a slice or array"),
+            };
+
+            // 检查是否为空
+            if (values_slice.len == 0) {
+                return error.EmptyWhereIn;
+            }
+
+            // 构建 IN 子句: column IN ($1, $2, $3)
+            var condition_buf = std.ArrayList(u8){};
+            defer condition_buf.deinit(self.allocator);
+
+            try condition_buf.appendSlice(self.allocator, column);
+            try condition_buf.appendSlice(self.allocator, " IN (");
+
+            // 生成占位符
+            for (values_slice, 0..) |_, i| {
+                if (i > 0) try condition_buf.appendSlice(self.allocator, ", ");
+                try condition_buf.appendSlice(self.allocator, "?"); // 占位符将在 build() 时替换
+            }
+            try condition_buf.appendSlice(self.allocator, ")");
+
+            // 分配参数数组
+            const args_slice = try self.allocator.alloc(QueryArg, values_slice.len);
+            errdefer self.allocator.free(args_slice);
+
+            // 转换值为 QueryArg
+            for (values_slice, 0..) |value, i| {
+                args_slice[i] = QueryArg.fromValue(value);
+            }
+
+            const clause = WhereClause{
+                .condition = try condition_buf.toOwnedSlice(self.allocator),
+                .args = args_slice,
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+
+            return self;
+        }
+
+        /// 添加 WHERE NOT IN 条件 (批量排除)
+        ///
+        /// 生成 WHERE column NOT IN ($1, $2, $3, ...) 子句
+        ///
+        /// ## 参数
+        /// - column: 列名
+        /// - values: 值数组或切片
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const banned_ids = [_]i64{ 99, 100 };
+        /// try query.whereNotIn("id", &banned_ids);
+        /// // 生成: WHERE id NOT IN ($1, $2)
+        /// ```
+        pub fn whereNotIn(self: *Self, column: []const u8, values: anytype) !*Self {
+            const ValuesType = @TypeOf(values);
+            const type_info = @typeInfo(ValuesType);
+
+            // 支持切片和数组
+            const values_slice = switch (type_info) {
+                .pointer => |ptr| if (ptr.size == .slice or ptr.size == .one) values else @compileError("whereNotIn requires a slice or array pointer"),
+                else => @compileError("whereNotIn requires a slice or array"),
+            };
+
+            // 检查是否为空
+            if (values_slice.len == 0) {
+                return error.EmptyWhereIn;
+            }
+
+            // 构建 NOT IN 子句: column NOT IN ($1, $2, $3)
+            var condition_buf = std.ArrayList(u8){};
+            defer condition_buf.deinit(self.allocator);
+
+            try condition_buf.appendSlice(self.allocator, column);
+            try condition_buf.appendSlice(self.allocator, " NOT IN (");
+
+            // 生成占位符
+            for (values_slice, 0..) |_, i| {
+                if (i > 0) try condition_buf.appendSlice(self.allocator, ", ");
+                try condition_buf.appendSlice(self.allocator, "?"); // 占位符将在 build() 时替换
+            }
+            try condition_buf.appendSlice(self.allocator, ")");
+
+            // 分配参数数组
+            const args_slice = try self.allocator.alloc(QueryArg, values_slice.len);
+            errdefer self.allocator.free(args_slice);
+
+            // 转换值为 QueryArg
+            for (values_slice, 0..) |value, i| {
+                args_slice[i] = QueryArg.fromValue(value);
+            }
+
+            const clause = WhereClause{
+                .condition = try condition_buf.toOwnedSlice(self.allocator),
+                .args = args_slice,
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+
+            return self;
+        }
+
+        /// 添加子查询作为 WHERE IN 条件
+        ///
+        /// 支持使用另一个 SELECT 查询作为 IN 子句的值源
+        ///
+        /// ## 参数
+        /// - column: 列名
+        /// - subquery: 子查询 (SelectQuery)
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var subquery = try db.newSelect(Post);
+        /// defer subquery.deinit();
+        /// try subquery.column("DISTINCT user_id")
+        ///     .where("published = ?", .{true});
+        ///
+        /// var update = try db.newUpdate(User);
+        /// defer update.deinit();
+        /// try update.set("verified = ?", .{true})
+        ///     .whereInSubquery("id", subquery);
+        /// // 生成: WHERE id IN (SELECT DISTINCT user_id FROM posts WHERE published = $1)
+        /// ```
+        pub fn whereInSubquery(self: *Self, column: []const u8, subquery: anytype) !*Self {
+            // 构建子查询 SQL
+            const subquery_sql = try subquery.build();
+            defer self.allocator.free(subquery_sql);
+
+            // 构建 IN 子句: column IN (subquery)
+            var condition_buf = std.ArrayList(u8){};
+            defer condition_buf.deinit(self.allocator);
+
+            try condition_buf.appendSlice(self.allocator, column);
+            try condition_buf.appendSlice(self.allocator, " IN (");
+            try condition_buf.appendSlice(self.allocator, subquery_sql);
+            try condition_buf.appendSlice(self.allocator, ")");
+
+            // 收集子查询的参数
+            var subquery_args = std.ArrayList(QueryArg){};
+            defer subquery_args.deinit(self.allocator);
+
+            // 从子查询的 where_clauses 中收集参数
+            for (subquery.where_clauses.items) |clause| {
+                try subquery_args.appendSlice(self.allocator, clause.args);
+            }
+
+            const clause = WhereClause{
+                .condition = try condition_buf.toOwnedSlice(self.allocator),
+                .args = try subquery_args.toOwnedSlice(self.allocator),
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+
+            return self;
+        }
+
         pub fn setReturning(self: *Self, cols: []const []const u8) *Self {
             // 编译时检查方言是否支持 RETURNING
             if (comptime !dialect.supportsReturning()) {
@@ -1106,6 +1328,24 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             return self;
         }
 
+        /// 构建 UPDATE SQL 语句
+        ///
+        /// 生成完整的 UPDATE SQL，包括占位符替换
+        ///
+        /// ## 返回
+        /// 返回构建的 SQL 字符串，调用者负责释放内存
+        ///
+        /// ## 错误
+        /// - NoColumnsToUpdate: 没有设置任何要更新的列
+        /// 构建 UPDATE SQL 语句
+        ///
+        /// 生成完整的 UPDATE SQL，包括占位符替换
+        ///
+        /// ## 返回
+        /// 返回构建的 SQL 字符串，调用者负责释放内存
+        ///
+        /// ## 错误
+        /// - NoColumnsToUpdate: 没有设置任何要更新的列
         /// 构建 UPDATE SQL 语句
         ///
         /// 生成完整的 UPDATE SQL，包括占位符替换
@@ -1130,9 +1370,23 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             // SET column = value
             try buf.appendSlice(self.allocator, " SET ");
 
+            // 计算 SET 子句的参数数量（用于占位符编号）
+            var param_index: usize = 1;
+
             for (self.set_clauses.items, 0..) |set_clause, i| {
                 if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                try buf.appendSlice(self.allocator, set_clause.assignment);
+
+                // 替换 SET 子句中的占位符 (? -> $N)
+                const replaced_assignment = try replacePlaceholders(
+                    self.allocator,
+                    set_clause.assignment,
+                    param_index,
+                );
+                defer self.allocator.free(replaced_assignment);
+                try buf.appendSlice(self.allocator, replaced_assignment);
+
+                // 根据实际参数数量增加索引
+                param_index += set_clause.args.len;
             }
 
             // WHERE
@@ -1144,7 +1398,18 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
                         try buf.appendSlice(self.allocator, clause.operator.toSQL());
                         try buf.appendSlice(self.allocator, " ");
                     }
-                    try buf.appendSlice(self.allocator, clause.condition);
+
+                    // 替换 WHERE 子句中的占位符 (? -> $N)
+                    const replaced_condition = try replacePlaceholders(
+                        self.allocator,
+                        clause.condition,
+                        param_index,
+                    );
+                    defer self.allocator.free(replaced_condition);
+                    try buf.appendSlice(self.allocator, replaced_condition);
+
+                    // 根据实际参数数量增加索引
+                    param_index += clause.args.len;
                 }
             }
 

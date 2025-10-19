@@ -755,6 +755,33 @@ pub const UpdateResult = struct {
     rows_affected: usize,
 };
 
+/// DELETE 查询执行结果
+///
+/// 包含删除操作影响的行数
+///
+/// ## 字段
+/// - rows_affected: 被删除的行数
+///
+/// ## 示例
+/// ```zig
+/// const result = try query.exec();
+/// std.debug.print("删除了 {d} 行\n", .{result.rows_affected});
+/// ```
+pub const DeleteResult = struct {
+    /// 受影响的行数
+    rows_affected: usize,
+};
+
+test "DeleteResult creation" {
+    const testing = std.testing;
+
+    const result = DeleteResult{
+        .rows_affected = 3,
+    };
+
+    try testing.expectEqual(@as(usize, 3), result.rows_affected);
+}
+
 test "UpdateResult creation" {
     const testing = std.testing;
 

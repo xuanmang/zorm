@@ -29,6 +29,7 @@ pub const HavingClause = types.HavingClause;
 pub const QueryArg = types.QueryArg;
 pub const InsertResult = types.InsertResult;
 pub const UpdateResult = types.UpdateResult;
+pub const DeleteResult = types.DeleteResult;
 pub const ConflictAction = types.ConflictAction;
 pub const OnConflictClause = types.OnConflictClause;
 pub const OnDuplicateKeyUpdate = types.OnDuplicateKeyUpdate;
@@ -554,7 +555,13 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const QueryArg {
 ///
 /// ## 返回
 /// 替换后的 SQL 字符串，调用者负责释放内存
-fn replacePlaceholders(allocator: Allocator, sql: []const u8, start_index: usize) ![]const u8 {
+fn replacePlaceholders(allocator: Allocator, sql: []const u8, start_index: usize, comptime dialect: Dialect) ![]const u8 {
+    // MySQL 使用 ? 占位符，不需要替换
+    if (comptime dialect == .mysql) {
+        return try allocator.dupe(u8, sql);
+    }
+
+    // PostgreSQL/SQLite 使用 $N 占位符
     var result = std.ArrayList(u8){};
     errdefer result.deinit(allocator);
 
@@ -1381,6 +1388,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
                     self.allocator,
                     set_clause.assignment,
                     param_index,
+                    dialect,
                 );
                 defer self.allocator.free(replaced_assignment);
                 try buf.appendSlice(self.allocator, replaced_assignment);
@@ -1404,6 +1412,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
                         self.allocator,
                         clause.condition,
                         param_index,
+                        dialect,
                     );
                     defer self.allocator.free(replaced_condition);
                     try buf.appendSlice(self.allocator, replaced_condition);
@@ -1536,7 +1545,6 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 /// const sql = try query.build();
 /// ```
 pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
-    _ = T; // TODO: 使用类型参数进行反射
     const DBType = db_mod.DB(dialect);
 
     return struct {
@@ -1547,8 +1555,13 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         table_name: []const u8,
         where_clauses: std.ArrayList(WhereClause),
         returning_columns: ?[]const []const u8,
+        has_where: bool, // 跟踪是否设置了 WHERE 条件
 
         /// 初始化删除查询构建器
+        ///
+        /// ## 安全设计
+        /// DeleteQuery 强制要求 WHERE 条件，防止意外删除所有行。
+        /// 如需删除所有行，请使用 db.exec("DELETE FROM table", .{})
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
             const self = try allocator.create(Self);
             errdefer allocator.destroy(self);
@@ -1559,6 +1572,7 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
                 .table_name = table_name,
                 .where_clauses = .{},
                 .returning_columns = null,
+                .has_where = false, // 初始化为 false
             };
 
             return self;
@@ -1576,6 +1590,16 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 添加 WHERE 条件 (AND)
+        ///
+        /// ## 参数
+        /// - condition: WHERE 条件表达式
+        /// - args: 绑定参数元组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.where("id = ?", .{123});
+        /// try query.where("status = ?", .{"inactive"});
+        /// ```
         pub fn where(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
             const clause = WhereClause{
@@ -1584,10 +1608,20 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
                 .operator = .and_op,
             };
             try self.where_clauses.append(self.allocator, clause);
+            self.has_where = true; // 标记已设置 WHERE
             return self;
         }
 
         /// 添加 WHERE 条件 (OR)
+        ///
+        /// ## 参数
+        /// - condition: WHERE 条件表达式
+        /// - args: 绑定参数元组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.whereOr("email = ?", .{"admin@example.com"});
+        /// ```
         pub fn whereOr(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
             const clause = WhereClause{
@@ -1596,19 +1630,149 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
                 .operator = .or_op,
             };
             try self.where_clauses.append(self.allocator, clause);
+            self.has_where = true; // 标记已设置 WHERE
             return self;
         }
 
-        /// 添加 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
+        /// 添加 WHERE IN 条件 (批量匹配)
+        ///
+        /// 生成 WHERE column IN ($1, $2, $3, ...) 子句
+        ///
+        /// ## 参数
+        /// - column: 列名
+        /// - values: 值数组或切片
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const user_ids = [_]i64{ 1, 2, 3, 5, 8 };
+        /// try query.whereIn("id", &user_ids);
+        /// // 生成: WHERE id IN ($1, $2, $3, $4, $5)
+        /// ```
+        pub fn whereIn(self: *Self, column: []const u8, values: anytype) !*Self {
+            const ValuesType = @TypeOf(values);
+            const type_info = @typeInfo(ValuesType);
+
+            // 支持切片和数组
+            const values_slice = switch (type_info) {
+                .pointer => |ptr| if (ptr.size == .slice or ptr.size == .one) values else @compileError("whereIn requires a slice or array pointer"),
+                else => @compileError("whereIn requires a slice or array"),
+            };
+
+            // 检查是否为空
+            if (values_slice.len == 0) {
+                return error.EmptyWhereIn;
+            }
+
+            // 构建 IN 子句: column IN ($1, $2, $3)
+            var condition_buf = std.ArrayList(u8){};
+            defer condition_buf.deinit(self.allocator);
+
+            try condition_buf.appendSlice(self.allocator, column);
+            try condition_buf.appendSlice(self.allocator, " IN (");
+
+            // 生成占位符
+            for (values_slice, 0..) |_, i| {
+                if (i > 0) try condition_buf.appendSlice(self.allocator, ", ");
+                try condition_buf.appendSlice(self.allocator, "?"); // 占位符将在 build() 时替换
+            }
+            try condition_buf.appendSlice(self.allocator, ")");
+
+            // 分配参数数组
+            const args_slice = try self.allocator.alloc(QueryArg, values_slice.len);
+            errdefer self.allocator.free(args_slice);
+
+            // 转换值为 QueryArg
+            for (values_slice, 0..) |value, i| {
+                args_slice[i] = QueryArg.fromValue(value);
+            }
+
+            const clause = WhereClause{
+                .condition = try condition_buf.toOwnedSlice(self.allocator),
+                .args = args_slice,
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+            self.has_where = true; // 标记已设置 WHERE
+
+            return self;
+        }
+
+        /// 添加 WHERE NOT IN 条件 (批量排除)
+        ///
+        /// 生成 WHERE column NOT IN ($1, $2, $3, ...) 子句
+        ///
+        /// ## 参数
+        /// - column: 列名
+        /// - values: 值数组或切片
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const banned_ids = [_]i64{ 99, 100 };
+        /// try query.whereNotIn("id", &banned_ids);
+        /// // 生成: WHERE id NOT IN ($1, $2)
+        /// ```
+        pub fn whereNotIn(self: *Self, column: []const u8, values: anytype) !*Self {
+            const ValuesType = @TypeOf(values);
+            const type_info = @typeInfo(ValuesType);
+
+            // 支持切片和数组
+            const values_slice = switch (type_info) {
+                .pointer => |ptr| if (ptr.size == .slice or ptr.size == .one) values else @compileError("whereNotIn requires a slice or array pointer"),
+                else => @compileError("whereNotIn requires a slice or array"),
+            };
+
+            // 检查是否为空
+            if (values_slice.len == 0) {
+                return error.EmptyWhereIn;
+            }
+
+            // 构建 NOT IN 子句: column NOT IN ($1, $2, $3)
+            var condition_buf = std.ArrayList(u8){};
+            defer condition_buf.deinit(self.allocator);
+
+            try condition_buf.appendSlice(self.allocator, column);
+            try condition_buf.appendSlice(self.allocator, " NOT IN (");
+
+            // 生成占位符
+            for (values_slice, 0..) |_, i| {
+                if (i > 0) try condition_buf.appendSlice(self.allocator, ", ");
+                try condition_buf.appendSlice(self.allocator, "?"); // 占位符将在 build() 时替换
+            }
+            try condition_buf.appendSlice(self.allocator, ")");
+
+            // 分配参数数组
+            const args_slice = try self.allocator.alloc(QueryArg, values_slice.len);
+            errdefer self.allocator.free(args_slice);
+
+            // 转换值为 QueryArg
+            for (values_slice, 0..) |value, i| {
+                args_slice[i] = QueryArg.fromValue(value);
+            }
+
+            const clause = WhereClause{
+                .condition = try condition_buf.toOwnedSlice(self.allocator),
+                .args = args_slice,
+                .operator = .and_op,
+            };
+            try self.where_clauses.append(self.allocator, clause);
+            self.has_where = true; // 标记已设置 WHERE
+
+            return self;
+        }
+
+        /// 设置 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
+        ///
+        /// 删除后返回被删除的数据,用于审计日志等场景
         ///
         /// ## 参数
         /// - cols: 要返回的列名数组
         ///
         /// ## 示例
         /// ```zig
-        /// try query.returning(&.{"id", "name"});
+        /// try query.setReturning(&.{"id", "name", "email"});
+        /// try query.setReturning(&.{"*"}); // 返回所有列
         /// ```
-        pub fn returning(self: *Self, cols: []const []const u8) !*Self {
+        pub fn setReturning(self: *Self, cols: []const []const u8) *Self {
             // 编译时检查方言是否支持 RETURNING
             if (comptime !dialect.supportsReturning()) {
                 @compileError("RETURNING is not supported by " ++ @tagName(dialect));
@@ -1619,7 +1783,20 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 构建 DELETE SQL 语句
+        ///
+        /// 生成完整的 DELETE SQL，包括占位符替换
+        ///
+        /// ## 返回
+        /// 返回构建的 SQL 字符串，调用者负责释放内存
+        ///
+        /// ## 错误
+        /// - MissingWhereClause: 未设置 WHERE 条件（安全检查）
         pub fn build(self: *Self) ![]const u8 {
+            // 安全检查：强制要求 WHERE 条件
+            if (!self.has_where) {
+                return error.MissingWhereClause;
+            }
+
             var buf = std.ArrayList(u8){};
             errdefer buf.deinit(self.allocator);
 
@@ -1628,16 +1805,28 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
             try buf.appendSlice(self.allocator, self.table_name);
 
             // WHERE
-            if (self.where_clauses.items.len > 0) {
-                try buf.appendSlice(self.allocator, " WHERE ");
-                for (self.where_clauses.items, 0..) |clause, i| {
-                    if (i > 0) {
-                        try buf.appendSlice(self.allocator, " ");
-                        try buf.appendSlice(self.allocator, clause.operator.toSQL());
-                        try buf.appendSlice(self.allocator, " ");
-                    }
-                    try buf.appendSlice(self.allocator, clause.condition);
+            try buf.appendSlice(self.allocator, " WHERE ");
+            var param_index: usize = 1;
+
+            for (self.where_clauses.items, 0..) |clause, i| {
+                if (i > 0) {
+                    try buf.appendSlice(self.allocator, " ");
+                    try buf.appendSlice(self.allocator, clause.operator.toSQL());
+                    try buf.appendSlice(self.allocator, " ");
                 }
+
+                // 替换 WHERE 子句中的占位符 (? -> $N)
+                const replaced_condition = try replacePlaceholders(
+                    self.allocator,
+                    clause.condition,
+                    param_index,
+                    dialect,
+                );
+                defer self.allocator.free(replaced_condition);
+                try buf.appendSlice(self.allocator, replaced_condition);
+
+                // 根据实际参数数量增加索引
+                param_index += clause.args.len;
             }
 
             // RETURNING (PostgreSQL/SQLite)
@@ -1652,8 +1841,25 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
             return buf.toOwnedSlice(self.allocator);
         }
 
-        /// 执行删除查询
-        pub fn exec(self: *Self) !void {
+        /// 执行删除查询，返回受影响的行数
+        ///
+        /// ## 安全设计
+        /// 如果未设置 WHERE 条件，返回 error.MissingWhereClause
+        /// 这防止意外删除表中所有数据
+        ///
+        /// ## 返回
+        /// 返回 DeleteResult，包含 rows_affected
+        ///
+        /// ## 错误
+        /// - MissingWhereClause: 未设置 WHERE 条件
+        /// - 数据库执行错误
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const result = try query.exec();
+        /// std.debug.print("删除了 {d} 行\n", .{result.rows_affected});
+        /// ```
+        pub fn exec(self: *Self) !DeleteResult {
             const query_str = try self.build();
             defer self.allocator.free(query_str);
 
@@ -1666,8 +1872,57 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             // 执行查询
-            const result = try self.db.exec(query_str, all_args.items);
+            try self.db.exec(query_str, all_args.items);
+
+            // TODO: 从数据库驱动获取实际的 rows_affected
+            // 目前返回 0，待驱动实现后更新
+            return DeleteResult{
+                .rows_affected = 0,
+            };
+        }
+
+        /// 执行删除查询并返回被删除的数据（需要 RETURNING 支持）
+        ///
+        /// ## 参数
+        /// - dest: 目标 ArrayList，用于存储被删除的数据
+        ///
+        /// ## 错误
+        /// - MissingWhereClause: 未设置 WHERE 条件
+        /// - 数据库执行错误
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var deleted_users = std.ArrayList(User){};
+        /// defer deleted_users.deinit(allocator);
+        ///
+        /// try query.setReturning(&.{"*"}).execReturning(&deleted_users);
+        /// for (deleted_users.items) |user| {
+        ///     std.debug.print("Deleted: {s} ({s})\n", .{user.name, user.email});
+        /// }
+        /// ```
+        pub fn execReturning(self: *Self, dest: *std.ArrayList(T)) !void {
+            // 编译时检查方言是否支持 RETURNING
+            if (comptime !dialect.supportsReturning()) {
+                @compileError("RETURNING is not supported by " ++ @tagName(dialect));
+            }
+
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            for (self.where_clauses.items) |clause| {
+                try all_args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 执行查询并扫描结果
+            const result = try self.db.query(query_str, all_args.items);
             defer result.close();
+
+            // 扫描行到目标列表
+            try self.db.scanRows(T, &result.rows, dest);
         }
     };
 }
@@ -2832,7 +3087,7 @@ test "DeleteQuery: 基本实例化" {
     try std.testing.expect(MySQLDeleteQuery != SQLiteDeleteQuery);
 }
 
-test "DeleteQuery: 简单DELETE (无WHERE)" {
+test "DeleteQuery: 无WHERE条件应返回错误 (安全检查)" {
     const MockDB = struct {
         allocator: Allocator,
     };
@@ -2842,10 +3097,9 @@ test "DeleteQuery: 简单DELETE (无WHERE)" {
     var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    const sql = try query.build();
-    defer std.testing.allocator.free(sql);
-
-    try std.testing.expectEqualStrings("DELETE FROM users", sql);
+    // 尝试构建没有 WHERE 条件的 DELETE 查询应该失败
+    const result = query.build();
+    try std.testing.expectError(error.MissingWhereClause, result);
 }
 
 test "DeleteQuery: DELETE with WHERE (PostgreSQL)" {
@@ -2916,7 +3170,7 @@ test "DeleteQuery: DELETE with RETURNING (PostgreSQL)" {
     defer query.deinit();
 
     _ = try query.where("id = $1", .{1});
-    _ = try query.returning(&.{ "id", "name" });
+    _ = query.setReturning(&.{ "id", "name" });
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);
@@ -2937,7 +3191,7 @@ test "DeleteQuery: 完整复杂DELETE (PostgreSQL)" {
     _ = try query.where("age < $1", .{18});
     _ = try query.where("status = $2", .{"inactive"});
     _ = try query.whereOr("deleted_at IS NOT NULL", .{});
-    _ = try query.returning(&.{ "id", "name", "deleted_at" });
+    _ = query.setReturning(&.{ "id", "name", "deleted_at" });
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);

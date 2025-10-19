@@ -120,6 +120,8 @@ pub const SelectQuery = query.SelectQuery;
 pub const InsertQuery = query.InsertQuery;
 pub const InsertResult = @import("types.zig").InsertResult; // Story 1.4
 pub const UpdateQuery = query.UpdateQuery;
+pub const UpdateResult = @import("types.zig").UpdateResult; // Story 2.1
+pub const DeleteResult = @import("types.zig").DeleteResult; // Story 2.3
 pub const DeleteQuery = query.DeleteQuery;
 pub const CreateTableQuery = query.CreateTableQuery;
 

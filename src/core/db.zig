@@ -335,15 +335,15 @@ pub fn DB(comptime dialect: Dialect) type {
 
             new_db.* = .{
                 .allocator = self.allocator,
-                .conn = self.conn,  // 共享连接
+                .conn = self.conn, // 共享连接
                 .options = self.options,
-                .stats = .{},  // 新的统计信息
-                .current_tx = null,  // 新的事务状态
-                .query_hooks = std.ArrayList(QueryHook).init(self.allocator),
+                .stats = .{}, // 新的统计信息
+                .current_tx = null, // 新的事务状态
+                .query_hooks = .{},
             };
 
             // 复制钩子列表
-            try new_db.query_hooks.appendSlice(self.query_hooks.items);
+            try new_db.query_hooks.appendSlice(self.allocator, self.query_hooks.items);
 
             return new_db;
         }
@@ -399,13 +399,13 @@ pub fn DB(comptime dialect: Dialect) type {
             dest: *std.ArrayList(T),
         ) !void {
             _ = self;
-            
+
             // TODO: 实现行扫描逻辑
             // 1. 遍历 rows
             // 2. 为每行创建 T 实例
             // 3. 填充字段值
             // 4. 添加到 dest
-            
+
             // 临时实现,避免未使用参数警告
             _ = rows;
             _ = dest;

@@ -1384,13 +1384,13 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
             errdefer buf.deinit();
 
             try buf.appendSlice("DROP TABLE ");
-            
+
             if (self.if_exists_flag) {
                 try buf.appendSlice("IF EXISTS ");
             }
-            
+
             try buf.appendSlice(self.table_name);
-            
+
             if (self.cascade_flag) {
                 try buf.appendSlice(" CASCADE");
             }

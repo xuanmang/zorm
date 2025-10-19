@@ -10,15 +10,10 @@ pub fn build(b: *std.Build) void {
     // PostgreSQL 支持选项
     const enable_postgres = b.option(bool, "postgres", "Enable PostgreSQL support") orelse false;
     // MySQL 支持选项
-    const enable_mysql = b.option(bool, "mysql", "Enable MySQL support") orelse false;
-    // SQLite 支持选项
-    const enable_sqlite = b.option(bool, "sqlite", "Enable SQLite support") orelse false;
 
     // 构建选项
     const options = b.addOptions();
     options.addOption(bool, "enable_postgres", enable_postgres);
-    options.addOption(bool, "enable_mysql", enable_mysql);
-    options.addOption(bool, "enable_sqlite", enable_sqlite);
 
     // 获取 pg.zig 依赖
     const pg_dep = b.dependency("pg", .{
@@ -179,6 +174,21 @@ pub fn build(b: *std.Build) void {
     const fmt_step = b.step("fmt", "Format code");
     fmt_step.dependOn(&fmt.step);
 
+    // 文档生成配置
+    // Zig 0.15.2 通过测试模块生成文档
+    const docs_obj = b.addTest(.{
+        .root_module = zorm_module,
+    });
+
+    const install_docs = b.addInstallDirectory(.{
+        .source_dir = docs_obj.getEmittedDocs(),
+        .install_dir = .prefix,
+        .install_subdir = "docs",
+    });
+
+    const docs_step = b.step("docs", "Generate API documentation");
+    docs_step.dependOn(&install_docs.step);
+
     // 单元测试配置
     const unit_tests = b.addTest(.{
         .root_module = zorm_module,
@@ -187,6 +197,26 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // DB 单元测试
+    const db_unit_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/unit/db_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    db_unit_test_module.addImport("zorm", zorm_module);
+
+    const db_unit_tests = b.addTest(.{
+        .root_module = db_unit_test_module,
+    });
+
+    const run_db_unit_tests = b.addRunArtifact(db_unit_tests);
+    const db_unit_test_step = b.step("test-db-unit", "Run DB unit tests");
+    db_unit_test_step.dependOn(&run_db_unit_tests.step);
+
+    // 将 DB 单元测试添加到主测试步骤
+    test_step.dependOn(&run_db_unit_tests.step);
 
     // 连接池测试
     const pool_test_module = b.createModule(.{

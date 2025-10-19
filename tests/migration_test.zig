@@ -644,7 +644,7 @@ test "MigrationManager: status 计算逻辑" {
 
     const status = try mgr.status();
 
-    try testing.expectEqual(@as(usize, 4), status.total);   // 总共 4 个
+    try testing.expectEqual(@as(usize, 4), status.total); // 总共 4 个
     try testing.expectEqual(@as(usize, 2), status.applied); // 已应用 2 个
     try testing.expectEqual(@as(usize, 2), status.pending); // 待应用 2 个
 }

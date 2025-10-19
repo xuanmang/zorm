@@ -8,13 +8,13 @@ const Dialect = @import("../dialect/dialect.zig").Dialect;
 /// SQL 数据类型
 pub const SQLType = enum {
     // 整数类型
-    smallint,      // 16-bit
-    integer,       // 32-bit
-    bigint,        // 64-bit
+    smallint, // 16-bit
+    integer, // 32-bit
+    bigint, // 64-bit
 
     // 浮点类型
-    real,          // 32-bit float
-    double,        // 64-bit float
+    real, // 32-bit float
+    double, // 64-bit float
 
     // 布尔类型
     boolean,
@@ -26,24 +26,24 @@ pub const SQLType = enum {
 
     // 时间类型
     timestamp,
-    timestamptz,   // timestamp with timezone
+    timestamptz, // timestamp with timezone
     date,
     time,
 
     // JSON 类型
     json,
-    jsonb,         // PostgreSQL binary JSON
+    jsonb, // PostgreSQL binary JSON
 
     // 二进制类型
     blob,
-    bytea,         // PostgreSQL
+    bytea, // PostgreSQL
 
     // UUID 类型
     uuid,
 
     // 自增类型
-    serial,        // auto-increment integer
-    bigserial,     // auto-increment bigint
+    serial, // auto-increment integer
+    bigserial, // auto-increment bigint
 
     /// 转换为特定方言的 SQL 类型字符串
     pub fn toSQL(self: SQLType, comptime dialect: Dialect) []const u8 {

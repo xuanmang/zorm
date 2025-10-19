@@ -33,6 +33,23 @@ pub fn build(b: *std.Build) void {
     // 添加 pg.zig 模块
     zorm_module.addImport("pg", pg_dep.module("pg"));
 
+    // 测试辅助模块 (test_helper)
+    const test_helper_module = b.createModule(.{
+        .root_source_file = b.path("tests/test_helper.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    test_helper_module.addImport("zorm", zorm_module);
+
+    // 测试数据种子模块 (seed_data)
+    const seed_data_module = b.createModule(.{
+        .root_source_file = b.path("tests/seed_data.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    seed_data_module.addImport("zorm", zorm_module);
+    seed_data_module.addImport("test_helper", test_helper_module);
+
     // 创建 examples_common 模块
     const examples_common_module = b.createModule(.{
         .root_source_file = b.path("examples/common/db_config.zig"),
@@ -206,6 +223,8 @@ pub fn build(b: *std.Build) void {
     });
 
     db_unit_test_module.addImport("zorm", zorm_module);
+    db_unit_test_module.addImport("test_helper", test_helper_module);
+    db_unit_test_module.addImport("seed_data", seed_data_module);
 
     const db_unit_tests = b.addTest(.{
         .root_module = db_unit_test_module,
@@ -358,6 +377,26 @@ pub fn build(b: *std.Build) void {
 
     // 将 DB 集成测试添加到主测试步骤
     test_step.dependOn(&run_db_integration_tests.step);
+
+    // 基础设施测试 (test_helper + seed_data)
+    const infrastructure_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/infrastructure_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    infrastructure_test_module.addImport("zorm", zorm_module);
+
+    const infrastructure_tests = b.addTest(.{
+        .root_module = infrastructure_test_module,
+    });
+
+    const run_infrastructure_tests = b.addRunArtifact(infrastructure_tests);
+    const infrastructure_test_step = b.step("test-infrastructure", "Run infrastructure tests (test_helper + seed_data)");
+    infrastructure_test_step.dependOn(&run_infrastructure_tests.step);
+
+    // 将基础设施测试添加到主测试步骤
+    test_step.dependOn(&run_infrastructure_tests.step);
 
     // PostgreSQL 集成测试
     if (enable_postgres) {

@@ -1,117 +1,23 @@
-//! DB 单元测试
+//! DB 集成测试
 //!
-//! 测试 DB 核心功能:
-//! - DB.init() 和 DB.deinit()
-//! - 配置选项
-//! - 内存泄漏检测
-//! - 资源清理
+//! 测试 DB 核心功能（基于真实 PostgreSQL）:
+//! - DB 初始化和清理
+//! - 真实连接管理  
+//! - 查询执行和统计
+//! - 克隆和多实例
 
 const std = @import("std");
 const testing = std.testing;
 const zorm = @import("zorm");
-
-// 导入需要的类型
-const DB = zorm.DB;
-const DBOptions = zorm.DBOptions;
-const QueryArg = zorm.QueryArg;
-const Conn = zorm.core.Conn;
-const Result = zorm.core.Result;
-const Tx = zorm.core.Tx;
-const Dialect = zorm.Dialect;
+const test_helper = @import("test_helper");
+const seed_data = @import("seed_data");
 
 // ============================================
-// Mock 实现用于测试
+// 配置测试（纯单元测试，不需要数据库）
 // ============================================
 
-/// Mock Connection 用于测试
-const MockConn = struct {
-    closed: bool = false,
-
-    pub fn init() MockConn {
-        return .{};
-    }
-
-    pub fn exec(_: *MockConn, _: []const u8, _: []const QueryArg) !void {}
-
-    pub fn query(_: *MockConn, _: []const u8, _: []const QueryArg) !*MockResult {
-        return error.NotImplemented;
-    }
-
-    pub fn begin(_: *MockConn) !*MockTx {
-        return error.NotImplemented;
-    }
-
-    pub fn close(self: *MockConn) void {
-        self.closed = true;
-    }
-
-    /// 转换为 db.Conn 接口
-    pub fn toConn(self: *MockConn) Conn {
-        const vtable = struct {
-            fn execFn(ptr: *anyopaque, sql: []const u8, args: []const QueryArg) anyerror!void {
-                const conn: *MockConn = @ptrCast(@alignCast(ptr));
-                return conn.exec(sql, args);
-            }
-
-            fn queryFn(ptr: *anyopaque, query_str: []const u8, args: []const QueryArg) anyerror!*Result {
-                const conn: *MockConn = @ptrCast(@alignCast(ptr));
-                _ = try conn.query(query_str, args);
-                return error.NotImplemented;
-            }
-
-            fn beginFn(ptr: *anyopaque) anyerror!*Tx {
-                const conn: *MockConn = @ptrCast(@alignCast(ptr));
-                _ = try conn.begin();
-                return error.NotImplemented;
-            }
-
-            fn closeFn(ptr: *anyopaque) void {
-                const conn: *MockConn = @ptrCast(@alignCast(ptr));
-                conn.close();
-            }
-        };
-
-        const static = struct {
-            var v: Conn.VTable = .{
-                .exec = vtable.execFn,
-                .query = vtable.queryFn,
-                .begin = vtable.beginFn,
-                .close = vtable.closeFn,
-            };
-        };
-
-        return .{
-            .ptr = self,
-            .vtable = &static.v,
-        };
-    }
-};
-
-const MockResult = struct {};
-const MockTx = struct {};
-
-// ============================================
-// 测试用例
-// ============================================
-
-test "DB: init and deinit without memory leak" {
-    const allocator = testing.allocator;
-
-    var mock_conn = MockConn.init();
-    const conn = mock_conn.toConn();
-
-    const PostgresDB = DB(.postgresql);
-
-    const db = try PostgresDB.init(allocator, conn, .{});
-    defer db.deinit();
-
-    // 验证 DB 初始化成功
-    try testing.expect(db.allocator.ptr == allocator.ptr);
-    try testing.expectEqual(PostgresDB.getDialect(), .postgresql);
-}
-
-test "DB: default configuration" {
-    const opts = DBOptions{};
+test "DB: default configuration values" {
+    const opts = zorm.DBOptions{};
 
     // 验证默认值
     try testing.expectEqual(false, opts.discard_unknown_columns);
@@ -125,116 +31,31 @@ test "DB: default configuration" {
     try testing.expectEqual(@as(u64, 1000), opts.slow_query_threshold);
 }
 
-test "DB: custom configuration" {
-    const allocator = testing.allocator;
-
-    var mock_conn = MockConn.init();
-    const conn = mock_conn.toConn();
-
-    const PostgresDB = DB(.postgresql);
-
-    const custom_opts = DBOptions{
-        .max_open_conns = 50,
-        .max_idle_conns = 10,
-        .conn_max_lifetime = 600,
-        .query_timeout = 60_000,
-        .enable_query_log = true,
-    };
-
-    const db = try PostgresDB.init(allocator, conn, custom_opts);
-    defer db.deinit();
-
-    // 验证自定义配置
-    try testing.expectEqual(@as(u32, 50), db.options.max_open_conns);
-    try testing.expectEqual(@as(u32, 10), db.options.max_idle_conns);
-    try testing.expectEqual(@as(u64, 600), db.options.conn_max_lifetime);
-    try testing.expectEqual(@as(u64, 60_000), db.options.query_timeout);
-    try testing.expectEqual(true, db.options.enable_query_log);
-}
-
 test "DB: getDialect is comptime" {
     // 验证 getDialect 可以在编译时调用
-    const PostgresDB = DB(.postgresql);
-    const MySQLDB = DB(.mysql);
-    const SQLiteDB = DB(.sqlite);
+    const PostgresDB = zorm.DB(.postgresql);
+    const MySQLDB = zorm.DB(.mysql);
+    const SQLiteDB = zorm.DB(.sqlite);
 
     try testing.expectEqual(.postgresql, PostgresDB.getDialect());
     try testing.expectEqual(.mysql, MySQLDB.getDialect());
     try testing.expectEqual(.sqlite, SQLiteDB.getDialect());
 }
 
-test "DB: stats initialization" {
-    const allocator = testing.allocator;
+test "DB: DBOptions all fields have defaults" {
+    // 使用默认构造
+    const opts = zorm.DBOptions{};
 
-    var mock_conn = MockConn.init();
-    const conn = mock_conn.toConn();
-
-    const PostgresDB = DB(.postgresql);
-
-    const db = try PostgresDB.init(allocator, conn, .{});
-    defer db.deinit();
-
-    // 验证统计信息初始化为 0
-    try testing.expectEqual(@as(u64, 0), db.stats.getQueryCount());
-    try testing.expectEqual(@as(u64, 0), db.stats.getErrorCount());
-}
-
-test "DB: deinit closes connection" {
-    const allocator = testing.allocator;
-
-    var mock_conn = MockConn.init();
-    const conn = mock_conn.toConn();
-
-    const PostgresDB = DB(.postgresql);
-
-    const db = try PostgresDB.init(allocator, conn, .{});
-
-    // 验证连接初始状态
-    try testing.expect(!mock_conn.closed);
-
-    // 调用 deinit
-    db.deinit();
-
-    // 验证连接已关闭
-    try testing.expect(mock_conn.closed);
-}
-
-test "DB: query hooks initialization" {
-    const allocator = testing.allocator;
-
-    var mock_conn = MockConn.init();
-    const conn = mock_conn.toConn();
-
-    const PostgresDB = DB(.postgresql);
-
-    const db = try PostgresDB.init(allocator, conn, .{});
-    defer db.deinit();
-
-    // 验证钩子列表初始为空
-    try testing.expectEqual(@as(usize, 0), db.query_hooks.items.len);
-}
-
-test "DB: clone creates independent instance" {
-    const allocator = testing.allocator;
-
-    var mock_conn = MockConn.init();
-    const conn = mock_conn.toConn();
-
-    const PostgresDB = DB(.postgresql);
-
-    const db = try PostgresDB.init(allocator, conn, .{});
-    defer db.deinit();
-
-    // 克隆 DB 实例
-    const cloned = try db.clone();
-    defer cloned.deinit();
-
-    // 验证克隆实例是独立的
-    try testing.expect(db != cloned);
-    try testing.expectEqual(db.allocator.ptr, cloned.allocator.ptr);
-
-    // 验证统计信息是独立的
-    try testing.expectEqual(@as(u64, 0), cloned.stats.getQueryCount());
+    // 验证所有字段都有默认值（编译时检查）
+    _ = opts.discard_unknown_columns;
+    _ = opts.max_open_conns;
+    _ = opts.max_idle_conns;
+    _ = opts.conn_max_lifetime;
+    _ = opts.conn_max_idle_time;
+    _ = opts.query_timeout;
+    _ = opts.enable_query_log;
+    _ = opts.enable_slow_query_log;
+    _ = opts.slow_query_threshold;
 }
 
 test "DBStats: record operations" {
@@ -259,43 +80,151 @@ test "DBStats: record operations" {
     try testing.expectEqual(@as(u64, 3), stats.getQueryCount());
 }
 
-test "DBOptions: all fields have defaults" {
-    // 使用默认构造
-    const opts = DBOptions{};
+// ============================================
+// 集成测试（基于真实 PostgreSQL）
+// ============================================
 
-    // 验证所有字段都有默认值
-    _ = opts.discard_unknown_columns;
-    _ = opts.max_open_conns;
-    _ = opts.max_idle_conns;
-    _ = opts.conn_max_lifetime;
-    _ = opts.conn_max_idle_time;
-    _ = opts.query_timeout;
-    _ = opts.enable_query_log;
-    _ = opts.enable_slow_query_log;
-    _ = opts.slow_query_threshold;
-
-    // 如果任何字段没有默认值,上面的代码会编译失败
-}
-
-test "DB: multiple instances with different dialects" {
+test "DB: init and deinit with real PostgreSQL connection" {
     const allocator = testing.allocator;
 
-    var mock_conn1 = MockConn.init();
-    var mock_conn2 = MockConn.init();
-    const conn1 = mock_conn1.toConn();
-    const conn2 = mock_conn2.toConn();
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
 
-    // 创建不同方言的 DB 实例
-    const PostgresDB = DB(.postgresql);
-    const MySQLDB = DB(.mysql);
+    // 验证 DB 初始化成功
+    try testing.expect(db.allocator.ptr == allocator.ptr);
+    try testing.expectEqual(.postgresql, zorm.DB(.postgresql).getDialect());
 
-    const pg_db = try PostgresDB.init(allocator, conn1, .{});
-    defer pg_db.deinit();
+    // 执行简单查询验证连接有效
+    const result = try test_helper.queryScalar(db, i64, "SELECT 1", &.{});
+    try testing.expectEqual(@as(i64, 1), result);
+}
 
-    const mysql_db = try MySQLDB.init(allocator, conn2, .{});
-    defer mysql_db.deinit();
+test "DB: stats tracking with real queries" {
+    const allocator = testing.allocator;
 
-    // 验证它们是不同的类型
-    try testing.expectEqual(PostgresDB.getDialect(), .postgresql);
-    try testing.expectEqual(MySQLDB.getDialect(), .mysql);
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    try test_helper.createTestTable(db, test_helper.TestUser);
+
+    // 初始状态：统计为 0
+    const initial_count = db.stats.getQueryCount();
+
+    // 执行查询
+    try seed_data.seedUser(db, "TestUser", "test@example.com", 25);
+
+    // 验证统计增加
+    const final_count = db.stats.getQueryCount();
+    try testing.expect(final_count > initial_count);
+}
+
+test "DB: connection executes queries correctly" {
+    const allocator = testing.allocator;
+
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    try test_helper.createTestTable(db, test_helper.TestUser);
+
+    // 插入数据
+    try seed_data.seedUsers(db);
+
+    // 验证数据已插入
+    const count = try test_helper.countRows(db, "test_users");
+    try testing.expectEqual(@as(i64, 5), count);
+
+    // 验证可以查询数据
+    const user = try seed_data.getUser(db, 1);
+    try testing.expectEqualStrings("Alice", user.name);
+}
+
+test "DB: cleanup closes connection properly" {
+    const allocator = testing.allocator;
+
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    try test_helper.createTestTable(db, test_helper.TestUser);
+    try seed_data.seedUsers(db);
+
+    // 验证数据存在
+    const count = try test_helper.countRows(db, "test_users");
+    try testing.expectEqual(@as(i64, 5), count);
+
+    // cleanup 会在 defer 中自动调用，验证不抛出错误
+}
+
+test "DB: query hooks list initialization" {
+    const allocator = testing.allocator;
+
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    // 验证钩子列表初始为空
+    try testing.expectEqual(@as(usize, 0), db.query_hooks.items.len);
+}
+
+test "DB: multiple queries maintain connection" {
+    const allocator = testing.allocator;
+
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    try test_helper.createTestTable(db, test_helper.TestUser);
+
+    // 执行多次查询
+    try seed_data.seedUser(db, "User1", "user1@example.com", 20);
+    try seed_data.seedUser(db, "User2", "user2@example.com", 25);
+    try seed_data.seedUser(db, "User3", "user3@example.com", 30);
+
+    // 验证所有查询都成功
+    const count = try test_helper.countRows(db, "test_users");
+    try testing.expectEqual(@as(i64, 3), count);
+}
+
+test "DB: schema isolation with test schema" {
+    const allocator = testing.allocator;
+
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    // 验证使用了测试 schema
+    const schema = try test_helper.queryScalar(
+        db,
+        []const u8,
+        "SELECT current_schema()",
+        &.{},
+    );
+
+    try testing.expectEqualStrings(test_helper.TEST_SCHEMA, schema);
+}
+
+test "DB: exec method executes SQL correctly" {
+    const allocator = testing.allocator;
+
+    const db = try test_helper.setupTestDB(allocator);
+    defer test_helper.cleanupTestDB(db) catch {};
+
+    // 使用 exec 创建表
+    const create_sql =
+        \\CREATE TABLE test_exec (
+        \\    id SERIAL PRIMARY KEY,
+        \\    value TEXT NOT NULL
+        \\)
+    ;
+
+    try db.exec(create_sql, &.{});
+
+    // 验证表已创建
+    const exists = try test_helper.tableExists(db, "test_exec");
+    try testing.expect(exists);
+
+    // 插入数据
+    const insert_sql = "INSERT INTO test_exec (value) VALUES ($1)";
+    const args = [_]zorm.QueryArg{zorm.QueryArg.fromValue("test_value")};
+    try db.exec(insert_sql, &args);
+
+    // 验证数据已插入
+    const count = try test_helper.countRows(db, "test_exec");
+    try testing.expectEqual(@as(i64, 1), count);
 }

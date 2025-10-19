@@ -22,6 +22,9 @@ const types_mod = @import("../types.zig");
 const QueryArg = types_mod.QueryArg;
 const driver = @import("../driver/connection.zig");
 const Rows = driver.Rows;
+const tx_manager_mod = @import("tx_manager.zig");
+pub const TxOptions = tx_manager_mod.TxOptions;
+pub const TxManager = tx_manager_mod.TxManager;
 
 /// DB 配置选项
 pub const DBOptions = struct {
@@ -216,7 +219,8 @@ pub fn DB(comptime dialect: Dialect) type {
         conn: Conn,
         options: DBOptions,
         stats: DBStats,
-        current_tx: ?*Tx,
+        /// 活动事务指针 (Story 2.4: 用于嵌套事务检测)
+        active_tx: ?*Tx,
         /// 查询钩子列表 (支持多个钩子)
         query_hooks: std.ArrayList(QueryHook),
 
@@ -242,7 +246,7 @@ pub fn DB(comptime dialect: Dialect) type {
                 .conn = conn,
                 .options = options,
                 .stats = .{},
-                .current_tx = null,
+                .active_tx = null,
                 .query_hooks = .{},
             };
 
@@ -258,9 +262,9 @@ pub fn DB(comptime dialect: Dialect) type {
         /// - 释放分配的内存
         pub fn deinit(self: *Self) void {
             // 如果有活动事务,回滚它
-            if (self.current_tx) |tx| {
+            if (self.active_tx) |tx| {
                 tx.rollback() catch {};
-                self.current_tx = null;
+                self.active_tx = null;
             }
 
             // 清理钩子列表
@@ -338,7 +342,7 @@ pub fn DB(comptime dialect: Dialect) type {
                 .conn = self.conn, // 共享连接
                 .options = self.options,
                 .stats = .{}, // 新的统计信息
-                .current_tx = null, // 新的事务状态
+                .active_tx = null, // 新的事务状态
                 .query_hooks = .{},
             };
 
@@ -433,7 +437,7 @@ pub fn DB(comptime dialect: Dialect) type {
             const start_time = std.time.nanoTimestamp();
 
             // 如果有活动事务,使用事务执行
-            const result = if (self.current_tx) |tx|
+            const result = if (self.active_tx) |tx|
                 tx.exec(query_str, args)
             else
                 self.conn.exec(query_str, args);
@@ -486,7 +490,7 @@ pub fn DB(comptime dialect: Dialect) type {
             const start_time = std.time.nanoTimestamp();
 
             // 如果有活动事务,使用事务执行
-            const result = if (self.current_tx) |tx|
+            const result = if (self.active_tx) |tx|
                 tx.query(query_str, args)
             else
                 self.conn.query(query_str, args);
@@ -518,37 +522,73 @@ pub fn DB(comptime dialect: Dialect) type {
             }
         }
 
-        /// 开始事务
+        /// 开始事务 (Story 2.4)
+        ///
+        /// 创建一个新的事务管理器,提供类型安全的事务操作和查询构建器方法
+        ///
+        /// ## 参数
+        /// - opts: 事务选项
+        ///
+        /// ## 返回
+        /// 返回事务管理器指针,调用者负责调用 deinit() 或 commit/rollback
+        ///
+        /// ## 错误
+        /// - NestedTransaction: 已有活动事务
+        /// - OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var tx = try db.beginTx(.{});
+        /// defer tx.deinit(); // 自动回滚未提交的事务
+        /// errdefer tx.rollback() catch {}; // 错误时回滚
+        ///
+        /// var insert = try tx.newInsert(User);
+        /// defer insert.deinit();
+        /// try insert.value(user).exec();
+        ///
+        /// try tx.commit();
+        /// ```
+        pub fn beginTx(self: *Self, opts: TxOptions) !*TxManager(dialect) {
+            return TxManager(dialect).init(self.allocator, self, opts);
+        }
+
+        /// 开始事务 (旧版 API,保留用于底层驱动)
+        ///
+        /// 注意: 推荐使用 beginTx() 代替此方法
         ///
         /// ## 错误
         /// - TransactionAlreadyStarted: 已有活动事务
         pub fn begin(self: *Self) !*Tx {
-            if (self.current_tx != null) {
+            if (self.active_tx != null) {
                 return error.TransactionAlreadyStarted;
             }
 
             const tx = try self.conn.begin();
-            self.current_tx = tx;
+            self.active_tx = tx;
             return tx;
         }
 
-        /// 提交事务
+        /// 提交事务 (旧版 API)
+        ///
+        /// 注意: 推荐使用 TxManager.commit() 代替此方法
         ///
         /// ## 错误
         /// - NoActiveTransaction: 没有活动事务
         pub fn commit(self: *Self) !void {
-            const tx = self.current_tx orelse return error.NoActiveTransaction;
-            defer self.current_tx = null;
+            const tx = self.active_tx orelse return error.NoActiveTransaction;
+            defer self.active_tx = null;
             return tx.commit();
         }
 
-        /// 回滚事务
+        /// 回滚事务 (旧版 API)
+        ///
+        /// 注意: 推荐使用 TxManager.rollback() 代替此方法
         ///
         /// ## 错误
         /// - NoActiveTransaction: 没有活动事务
         pub fn rollback(self: *Self) !void {
-            const tx = self.current_tx orelse return error.NoActiveTransaction;
-            defer self.current_tx = null;
+            const tx = self.active_tx orelse return error.NoActiveTransaction;
+            defer self.active_tx = null;
             return tx.rollback();
         }
 

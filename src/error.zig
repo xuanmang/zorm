@@ -99,10 +99,31 @@ pub const Error = error{
     /// 使用场景: 嵌套事务未正确使用 SAVEPOINT,或忘记 commit/rollback
     TransactionAlreadyStarted,
 
+    /// 嵌套事务不支持 (Story 2.4)
+    /// 触发条件: 尝试在已有活动事务时调用 beginTx()
+    /// 使用场景: PostgreSQL 不支持真正的嵌套事务,使用 SAVEPOINT 在 v2.0
+    /// 注意: 这是 TransactionAlreadyStarted 的更明确版本
+    NestedTransaction,
+
     /// 没有活动事务
     /// 触发条件: 尝试 commit/rollback 但当前无活动事务
     /// 使用场景: 重复调用 commit() 或未调用 begin()
     NoActiveTransaction,
+
+    /// 事务未激活 (Story 2.4)
+    /// 触发条件: 尝试在非活动事务上执行操作
+    /// 使用场景: commit/rollback 后再次调用事务方法
+    TransactionNotActive,
+
+    /// 事务已提交 (Story 2.4)
+    /// 触发条件: 尝试对已提交的事务执行 commit/rollback
+    /// 使用场景: 重复提交或提交后尝试回滚
+    AlreadyCommitted,
+
+    /// 事务已回滚 (Story 2.4)
+    /// 触发条件: 尝试对已回滚的事务执行 commit
+    /// 使用场景: 回滚后尝试提交
+    AlreadyRolledBack,
 
     /// 事务回滚失败
     /// 触发条件: ROLLBACK 命令执行失败
@@ -281,9 +302,13 @@ test "all error types are defined" {
         error.InvalidColumnIndex,
         error.TypeMismatch,
         error.NullValue,
-        // 事务错误
+        // 事务错误 (Story 2.4 新增)
         error.TransactionAlreadyStarted,
+        error.NestedTransaction,
         error.NoActiveTransaction,
+        error.TransactionNotActive,
+        error.AlreadyCommitted,
+        error.AlreadyRolledBack,
         error.TransactionRollbackFailed,
         error.TransactionCommitFailed,
         // 内存错误
@@ -295,6 +320,6 @@ test "all error types are defined" {
         error.NoColumnsSpecified,
     };
 
-    // 验证数组长度符合预期(22个错误)
-    try testing.expectEqual(@as(usize, 22), errors.len);
+    // 验证数组长度符合预期(26个错误,Story 2.4 新增 4个)
+    try testing.expectEqual(@as(usize, 26), errors.len);
 }

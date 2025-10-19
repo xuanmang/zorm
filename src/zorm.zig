@@ -106,6 +106,9 @@ pub const DB = core.DB;
 pub const DBOptions = core.DBOptions;
 pub const Transaction = transaction.Transaction;
 pub const TransactionError = transaction.TransactionError;
+// Story 2.4: 新事务管理系统
+pub const TxOptions = core.TxOptions;
+pub const TxManager = core.TxManager;
 pub const Dialect = dialect.Dialect;
 pub const Feature = dialect.Feature;
 pub const QueryArg = @import("types.zig").QueryArg;

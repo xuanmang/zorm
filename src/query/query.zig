@@ -28,6 +28,7 @@ pub const OrderDirection = types.OrderDirection;
 pub const HavingClause = types.HavingClause;
 pub const QueryArg = types.QueryArg;
 pub const InsertResult = types.InsertResult;
+pub const UpdateResult = types.UpdateResult;
 pub const ConflictAction = types.ConflictAction;
 pub const OnConflictClause = types.OnConflictClause;
 pub const OnDuplicateKeyUpdate = types.OnDuplicateKeyUpdate;
@@ -683,7 +684,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             const first_row_type_info = @typeInfo(@TypeOf(rows[0]));
             const column_count = first_row_type_info.@"struct".fields.len;
             const total_params = rows.len * column_count;
-            
+
             // PostgreSQL 最大参数限制: 65535
             if (total_params > 65535) {
                 return error.ExceedsPostgreSQLParamLimit;
@@ -962,16 +963,15 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 /// const sql = try query.build();
 /// ```
 pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
-    _ = T; // TODO: 使用类型参数进行反射
     const DBType = db_mod.DB(dialect);
 
     return struct {
         const Self = @This();
 
-        /// SET子句：字段名和值
+        /// SET子句：包含表达式和参数
         const SetClause = struct {
-            column: []const u8,
-            value: QueryArg,
+            assignment: []const u8, // SQL 表达式，如 "age = age + 1" 或 "name = $1"
+            args: []const QueryArg,
         };
 
         allocator: Allocator,
@@ -1000,6 +1000,10 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 释放资源
         pub fn deinit(self: *Self) void {
+            // 释放 SET 子句参数
+            for (self.set_clauses.items) |clause| {
+                self.allocator.free(clause.args);
+            }
             self.set_clauses.deinit(self.allocator);
 
             // 释放 WHERE 子句参数
@@ -1011,27 +1015,46 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             self.allocator.destroy(self);
         }
 
-        /// 设置要更新的字段
+        /// 设置要更新的字段（支持字符串表达式）
+        ///
+        /// 支持 SQL 表达式，如算术运算、函数调用等
         ///
         /// ## 参数
-        /// - column: 列名
-        /// - value: 新值
+        /// - assignments: SET 表达式字符串，如 "age = age + 1, updated_at = $1"
+        /// - args: 绑定参数元组
         ///
         /// ## 示例
         /// ```zig
-        /// try query.set("name", "Alice");
-        /// try query.set("age", 25);
+        /// // 简单赋值
+        /// try query.set("name = $1", .{"Alice"});
+        ///
+        /// // 多列更新
+        /// try query.set("age = age + 1, updated_at = $1", .{std.time.timestamp()});
+        ///
+        /// // 表达式更新
+        /// try query.set("score = score * 2, level = $1", .{5});
         /// ```
-        pub fn set(self: *Self, column: []const u8, value: anytype) !*Self {
+        pub fn set(self: *Self, assignments: []const u8, args: anytype) !*Self {
+            const args_slice = try allocArgs(self.allocator, args);
             const clause = SetClause{
-                .column = column,
-                .value = QueryArg.fromValue(value),
+                .assignment = assignments,
+                .args = args_slice,
             };
             try self.set_clauses.append(self.allocator, clause);
             return self;
         }
 
         /// 添加 WHERE 条件 (AND)
+        ///
+        /// ## 参数
+        /// - condition: WHERE 条件表达式
+        /// - args: 绑定参数元组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.where("email = $1", .{"alice@example.com"});
+        /// try query.where("age > $1", .{18});
+        /// ```
         pub fn where(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
             const clause = WhereClause{
@@ -1044,6 +1067,15 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 添加 WHERE 条件 (OR)
+        ///
+        /// ## 参数
+        /// - condition: WHERE 条件表达式
+        /// - args: 绑定参数元组
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.whereOr("status = $1", .{"active"});
+        /// ```
         pub fn whereOr(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
             const clause = WhereClause{
@@ -1055,16 +1087,16 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             return self;
         }
 
-        /// 添加 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
+        /// 设置 RETURNING 子句 (仅 PostgreSQL 和 SQLite 支持)
         ///
         /// ## 参数
         /// - cols: 要返回的列名数组
         ///
         /// ## 示例
         /// ```zig
-        /// try query.returning(&.{"id", "updated_at"});
+        /// try query.setReturning(&.{"id", "updated_at"});
         /// ```
-        pub fn returning(self: *Self, cols: []const []const u8) !*Self {
+        pub fn setReturning(self: *Self, cols: []const []const u8) *Self {
             // 编译时检查方言是否支持 RETURNING
             if (comptime !dialect.supportsReturning()) {
                 @compileError("RETURNING is not supported by " ++ @tagName(dialect));
@@ -1075,6 +1107,14 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 构建 UPDATE SQL 语句
+        ///
+        /// 生成完整的 UPDATE SQL，包括占位符替换
+        ///
+        /// ## 返回
+        /// 返回构建的 SQL 字符串，调用者负责释放内存
+        ///
+        /// ## 错误
+        /// - NoColumnsToUpdate: 没有设置任何要更新的列
         pub fn build(self: *Self) ![]const u8 {
             if (self.set_clauses.items.len == 0) {
                 return error.NoColumnsToUpdate;
@@ -1090,19 +1130,9 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             // SET column = value
             try buf.appendSlice(self.allocator, " SET ");
 
-            var param_index: usize = 1;
             for (self.set_clauses.items, 0..) |set_clause, i| {
                 if (i > 0) try buf.appendSlice(self.allocator, ", ");
-
-                try buf.appendSlice(self.allocator, set_clause.column);
-                try buf.appendSlice(self.allocator, " = ");
-
-                // 生成占位符
-                switch (dialect) {
-                    .postgresql => try std.fmt.format(buf.writer(self.allocator), "${d}", .{param_index}),
-                    .mysql, .sqlite => try buf.appendSlice(self.allocator, "?"),
-                }
-                param_index += 1;
+                try buf.appendSlice(self.allocator, set_clause.assignment);
             }
 
             // WHERE
@@ -1130,8 +1160,21 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             return buf.toOwnedSlice(self.allocator);
         }
 
-        /// 执行更新查询
-        pub fn exec(self: *Self) !void {
+        /// 执行更新查询，返回受影响的行数
+        ///
+        /// ## 返回
+        /// 返回 UpdateResult，包含 rows_affected
+        ///
+        /// ## 错误
+        /// - NoColumnsToUpdate: 没有设置任何要更新的列
+        /// - 数据库执行错误
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const result = try query.exec();
+        /// std.debug.print("更新了 {} 行\n", .{result.rows_affected});
+        /// ```
+        pub fn exec(self: *Self) !UpdateResult {
             const query_str = try self.build();
             defer self.allocator.free(query_str);
 
@@ -1141,7 +1184,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // 先添加 SET 参数
             for (self.set_clauses.items) |set_clause| {
-                try all_args.append(self.allocator, set_clause.value);
+                try all_args.appendSlice(self.allocator, set_clause.args);
             }
 
             // 再添加 WHERE 参数
@@ -1150,8 +1193,63 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             // 执行查询
-            const result = try self.db.exec(query_str, all_args.items);
+            try self.db.exec(query_str, all_args.items);
+
+            // TODO: 从数据库驱动获取实际的 rows_affected
+            // 目前返回 0，待驱动实现后更新
+            return UpdateResult{
+                .rows_affected = 0,
+            };
+        }
+
+        /// 执行更新查询并返回更新后的数据（需要 RETURNING 支持）
+        ///
+        /// ## 参数
+        /// - dest: 目标 ArrayList，用于存储更新后的数据
+        ///
+        /// ## 错误
+        /// - NoColumnsToUpdate: 没有设置任何要更新的列
+        /// - 数据库执行错误
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var updated_users = std.ArrayList(User){};
+        /// defer updated_users.deinit(allocator);
+        ///
+        /// try query.setReturning(&.{"*"}).execReturning(&updated_users);
+        /// for (updated_users.items) |user| {
+        ///     std.debug.print("Updated: {s}\n", .{user.name});
+        /// }
+        /// ```
+        pub fn execReturning(self: *Self, dest: *std.ArrayList(T)) !void {
+            // 编译时检查方言是否支持 RETURNING
+            if (comptime !dialect.supportsReturning()) {
+                @compileError("RETURNING is not supported by " ++ @tagName(dialect));
+            }
+
+            const query_str = try self.build();
+            defer self.allocator.free(query_str);
+
+            // 收集所有参数 (SET + WHERE)
+            var all_args = std.ArrayList(QueryArg){};
+            defer all_args.deinit(self.allocator);
+
+            // 先添加 SET 参数
+            for (self.set_clauses.items) |set_clause| {
+                try all_args.appendSlice(self.allocator, set_clause.args);
+            }
+
+            // 再添加 WHERE 参数
+            for (self.where_clauses.items) |clause| {
+                try all_args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 执行查询并获取结果
+            const result = try self.db.query(query_str, all_args.items);
             defer result.close();
+
+            // 扫描结果到目标 ArrayList
+            try self.db.scanRows(T, &result.rows, dest);
         }
     };
 }
@@ -2324,7 +2422,7 @@ test "UpdateQuery: 基本UPDATE (PostgreSQL)" {
     var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Alice");
+    _ = try query.set("name = $1", .{"Alice"});
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);
@@ -2342,7 +2440,7 @@ test "UpdateQuery: 基本UPDATE (MySQL)" {
     var query = try UpdateQuery(User, .mysql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Bob");
+    _ = try query.set("name = ?", .{"Bob"});
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);
@@ -2360,9 +2458,9 @@ test "UpdateQuery: 多个SET子句" {
     var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Alice");
-    _ = try query.set("email", "alice@example.com");
-    _ = try query.set("age", 25);
+    _ = try query.set("name = $1", .{"Alice"});
+    _ = try query.set("email = $2", .{"alice@example.com"});
+    _ = try query.set("age = $3", .{25});
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);
@@ -2380,7 +2478,7 @@ test "UpdateQuery: UPDATE with WHERE" {
     var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Alice");
+    _ = try query.set("name = $1", .{"Alice"});
     _ = try query.where("id = $2", .{1});
 
     const sql = try query.build();
@@ -2399,7 +2497,7 @@ test "UpdateQuery: UPDATE with multiple WHERE (AND/OR)" {
     var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Alice");
+    _ = try query.set("name = $1", .{"Alice"});
     _ = try query.where("age > $2", .{18});
     _ = try query.where("status = $3", .{"active"});
     _ = try query.whereOr("role = $4", .{"admin"});
@@ -2421,9 +2519,9 @@ test "UpdateQuery: UPDATE with RETURNING (PostgreSQL)" {
     var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Alice");
+    _ = try query.set("name = $1", .{"Alice"});
     _ = try query.where("id = $2", .{1});
-    _ = try query.returning(&.{ "id", "updated_at" });
+    _ = query.setReturning(&.{ "id", "updated_at" });
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);
@@ -2441,12 +2539,12 @@ test "UpdateQuery: 完整复杂UPDATE (PostgreSQL)" {
     var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    _ = try query.set("name", "Alice");
-    _ = try query.set("email", "alice@example.com");
-    _ = try query.set("age", 25);
+    _ = try query.set("name = $1", .{"Alice"});
+    _ = try query.set("email = $2", .{"alice@example.com"});
+    _ = try query.set("age = $3", .{25});
     _ = try query.where("id = $4", .{1});
     _ = try query.where("status = $5", .{"active"});
-    _ = try query.returning(&.{"id"});
+    _ = query.setReturning(&.{"id"});
 
     const sql = try query.build();
     defer std.testing.allocator.free(sql);
@@ -2590,13 +2688,17 @@ test "DeleteQuery: 完整复杂DELETE (PostgreSQL)" {
 test "CreateTableQuery: 基本 CREATE TABLE" {
     const Column = @import("../schema/table.zig").Column;
 
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
     const MockDB = struct {
         allocator: Allocator,
     };
 
     var db = MockDB{ .allocator = std.testing.allocator };
 
-    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    var query = try CreateTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
     defer query.deinit();
 
     var id_col = Column.init("id", .bigint);
@@ -2619,13 +2721,17 @@ test "CreateTableQuery: 基本 CREATE TABLE" {
 test "CreateTableQuery: IF NOT EXISTS" {
     const Column = @import("../schema/table.zig").Column;
 
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
     const MockDB = struct {
         allocator: Allocator,
     };
 
     var db = MockDB{ .allocator = std.testing.allocator };
 
-    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    var query = try CreateTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
     defer query.deinit();
 
     _ = query.ifNotExists();
@@ -2643,13 +2749,17 @@ test "CreateTableQuery: IF NOT EXISTS" {
 test "CreateTableQuery: 外键约束" {
     const Column = @import("../schema/table.zig").Column;
 
+    const TestPost = struct {
+        pub const table_name = "posts";
+    };
+
     const MockDB = struct {
         allocator: Allocator,
     };
 
     var db = MockDB{ .allocator = std.testing.allocator };
 
-    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "posts");
+    var query = try CreateTableQuery(TestPost, .postgresql).init(std.testing.allocator, @ptrCast(&db));
     defer query.deinit();
 
     var id_col = Column.init("id", .bigint);
@@ -2670,13 +2780,17 @@ test "CreateTableQuery: 外键约束" {
 test "CreateTableQuery: MySQL 语法" {
     const Column = @import("../schema/table.zig").Column;
 
+    const TestProduct = struct {
+        pub const table_name = "products";
+    };
+
     const MockDB = struct {
         allocator: Allocator,
     };
 
     var db = MockDB{ .allocator = std.testing.allocator };
 
-    var query = try CreateTableQuery(.mysql).init(std.testing.allocator, @ptrCast(&db), "products");
+    var query = try CreateTableQuery(TestProduct, .mysql).init(std.testing.allocator, @ptrCast(&db));
     defer query.deinit();
 
     var id_col = Column.init("id", .bigint);
@@ -2697,13 +2811,17 @@ test "CreateTableQuery: MySQL 语法" {
 test "CreateTableQuery: 复合主键" {
     const Column = @import("../schema/table.zig").Column;
 
+    const TestUserRole = struct {
+        pub const table_name = "user_roles";
+    };
+
     const MockDB = struct {
         allocator: Allocator,
     };
 
     var db = MockDB{ .allocator = std.testing.allocator };
 
-    var query = try CreateTableQuery(.postgresql).init(std.testing.allocator, @ptrCast(&db), "user_roles");
+    var query = try CreateTableQuery(TestUserRole, .postgresql).init(std.testing.allocator, @ptrCast(&db));
     defer query.deinit();
 
     var user_id_col = Column.init("user_id", .bigint);

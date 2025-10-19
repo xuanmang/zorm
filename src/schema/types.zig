@@ -47,7 +47,7 @@ pub const SQLType = enum {
 
     /// 转换为特定方言的 SQL 类型字符串
     pub fn toSQL(self: SQLType, comptime dialect: Dialect) []const u8 {
-        return comptime switch (dialect) {
+        return switch (dialect) {
             .postgresql => switch (self) {
                 .smallint => "SMALLINT",
                 .integer => "INTEGER",
@@ -113,50 +113,6 @@ pub const SQLType = enum {
                 .uuid => "TEXT",
                 .serial => "INTEGER",
                 .bigserial => "INTEGER",
-            },
-            .mssql => switch (self) {
-                .smallint => "SMALLINT",
-                .integer => "INT",
-                .bigint => "BIGINT",
-                .real => "REAL",
-                .double => "FLOAT",
-                .boolean => "BIT",
-                .text => "NVARCHAR(MAX)",
-                .varchar => "NVARCHAR(255)",
-                .char => "NCHAR",
-                .timestamp => "DATETIME2",
-                .timestamptz => "DATETIMEOFFSET",
-                .date => "DATE",
-                .time => "TIME",
-                .json => "NVARCHAR(MAX)",
-                .jsonb => "NVARCHAR(MAX)",
-                .blob => "VARBINARY(MAX)",
-                .bytea => "VARBINARY(MAX)",
-                .uuid => "UNIQUEIDENTIFIER",
-                .serial => "INT IDENTITY",
-                .bigserial => "BIGINT IDENTITY",
-            },
-            .oracle => switch (self) {
-                .smallint => "NUMBER(5)",
-                .integer => "NUMBER(10)",
-                .bigint => "NUMBER(19)",
-                .real => "BINARY_FLOAT",
-                .double => "BINARY_DOUBLE",
-                .boolean => "NUMBER(1)",
-                .text => "CLOB",
-                .varchar => "VARCHAR2(255)",
-                .char => "CHAR",
-                .timestamp => "TIMESTAMP",
-                .timestamptz => "TIMESTAMP WITH TIME ZONE",
-                .date => "DATE",
-                .time => "TIMESTAMP",
-                .json => "CLOB",
-                .jsonb => "CLOB",
-                .blob => "BLOB",
-                .bytea => "BLOB",
-                .uuid => "RAW(16)",
-                .serial => "NUMBER GENERATED ALWAYS AS IDENTITY",
-                .bigserial => "NUMBER GENERATED ALWAYS AS IDENTITY",
             },
         };
     }

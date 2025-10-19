@@ -738,3 +738,29 @@ test "OnDuplicateKeyUpdate creation" {
     try testing.expectEqualStrings("name", update.columns[0]);
     try testing.expectEqualStrings("email", update.columns[1]);
 }
+
+// ========== UPDATE 相关类型 ==========
+
+/// UPDATE 查询结果
+///
+/// 包含更新操作的结果信息。
+///
+/// 使用示例:
+/// ```zig
+/// const result = try query.exec();
+/// std.debug.print("更新了 {} 行\n", .{result.rows_affected});
+/// ```
+pub const UpdateResult = struct {
+    /// 受影响的行数
+    rows_affected: usize,
+};
+
+test "UpdateResult creation" {
+    const testing = std.testing;
+
+    const result = UpdateResult{
+        .rows_affected = 5,
+    };
+
+    try testing.expectEqual(@as(usize, 5), result.rows_affected);
+}

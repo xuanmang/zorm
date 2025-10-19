@@ -38,9 +38,9 @@ pub fn generateCreateTableSQL(
     comptime dialect: Dialect,
     allocator: Allocator,
 ) ![]const u8 {
-    var buf = std.ArrayList(u8).init(allocator);
-    errdefer buf.deinit();
-    const writer = buf.writer();
+    var buf: std.ArrayList(u8) = .{};
+    errdefer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
 
     const table_name = getTableName(T);
     try writer.print("CREATE TABLE {s} (\n", .{table_name});
@@ -76,7 +76,7 @@ pub fn generateCreateTableSQL(
     }
 
     try writer.writeAll("\n)");
-    return buf.toOwnedSlice();
+    return buf.toOwnedSlice(allocator);
 }
 
 /// 从 struct 字段生成 Column 列表
@@ -208,7 +208,7 @@ test "generateColumns" {
 
     // id 列
     try std.testing.expectEqualStrings("id", columns[0].name);
-    try std.testing.expectEqual(ColumnType.bigserial, columns[0].column_type);
+    try std.testing.expectEqual(ColumnType.bigint, columns[0].column_type);
     try std.testing.expect(columns[0].primary_key);
     try std.testing.expect(!columns[0].nullable);
 

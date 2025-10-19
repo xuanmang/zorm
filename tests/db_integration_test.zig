@@ -43,7 +43,7 @@ test "DB integration - query builder types exist" {
     const InsertQueryType = zorm.InsertQuery(User, .postgresql);
     const UpdateQueryType = zorm.UpdateQuery(User, .postgresql);
     const DeleteQueryType = zorm.DeleteQuery(User, .postgresql);
-    const CreateTableQueryType = zorm.CreateTableQuery(.postgresql);
+    const CreateTableQueryType = zorm.CreateTableQuery(User, .postgresql);
 
     // 验证类型大小合理(即类型定义正确)
     try testing.expect(@sizeOf(SelectQueryType) > 0);

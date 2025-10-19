@@ -117,6 +117,7 @@ pub const HookChain = hooks.HookChain;
 // 导出查询构建器
 pub const SelectQuery = query.SelectQuery;
 pub const InsertQuery = query.InsertQuery;
+pub const InsertResult = @import("types.zig").InsertResult; // Story 1.4
 pub const UpdateQuery = query.UpdateQuery;
 pub const DeleteQuery = query.DeleteQuery;
 pub const CreateTableQuery = query.CreateTableQuery;

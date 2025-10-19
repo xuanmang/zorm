@@ -369,9 +369,9 @@ fn demoInsertQuery(allocator: std.mem.Allocator) !void {
         std.debug.print("   SQL: {s}\n\n", .{sql});
     }
 
-    // 演示批量插入
+    // 演示批量插入 (Story 1.5)
     {
-        std.debug.print("   批量插入:\n", .{});
+        std.debug.print("   批量插入 (Story 1.5 - 性能优化):\n", .{});
 
         var query = try zorm.InsertQuery(User, .postgresql).init(
             allocator,
@@ -380,14 +380,12 @@ fn demoInsertQuery(allocator: std.mem.Allocator) !void {
         );
         defer query.deinit();
 
-        const users = [_]@TypeOf(.{
-            .id = @as(i64, 0),
-            .name = @as([]const u8, ""),
-            .email = @as([]const u8, ""),
-            .created_at = @as(i64, 0),
-        }){
+        // Story 1.5: 使用 .values() 一次性插入多行
+        // 优势: 单条 SQL, 减少网络往返, 减少事务开销
+        const users = [_]User{
             .{ .id = 3, .name = "Charlie", .email = "charlie@example.com", .created_at = std.time.timestamp() },
             .{ .id = 4, .name = "David", .email = "david@example.com", .created_at = std.time.timestamp() },
+            .{ .id = 5, .name = "Eve", .email = "eve@example.com", .created_at = std.time.timestamp() },
         };
 
         _ = try query.values(&users);
@@ -395,7 +393,34 @@ fn demoInsertQuery(allocator: std.mem.Allocator) !void {
         const sql = try query.build();
         defer allocator.free(sql);
 
-        std.debug.print("   SQL: {s}\n\n", .{sql});
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   优势: 单条 SQL, 3 行数据, PostgreSQL 占位符 $1-$12\n\n", .{});
+    }
+
+    // 演示批量插入 + RETURNING (Story 1.5 AC3)
+    {
+        std.debug.print("   批量插入 + RETURNING:\n", .{});
+
+        var query = try zorm.InsertQuery(User, .postgresql).init(
+            allocator,
+            @ptrCast(&mock_db),
+            "users",
+        );
+        defer query.deinit();
+
+        const users = [_]User{
+            .{ .id = 6, .name = "Frank", .email = "frank@example.com", .created_at = std.time.timestamp() },
+            .{ .id = 7, .name = "Grace", .email = "grace@example.com", .created_at = std.time.timestamp() },
+        };
+
+        _ = try query.values(&users);
+        _ = try query.returning(&.{"*"});
+
+        const sql = try query.build();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   用途: 批量插入并返回所有插入行的数据\n\n", .{});
     }
 
     // 演示 ON CONFLICT (PostgreSQL)

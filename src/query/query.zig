@@ -673,6 +673,28 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 @compileError("values() requires a slice or array pointer");
             }
 
+            // AC1.5.1: 批量大小限制
+            const MAX_BATCH_SIZE = 1000; // 保守值,适用于大多数场景
+            if (rows.len > MAX_BATCH_SIZE) {
+                return error.BatchSizeTooLarge;
+            }
+
+            // 计算总参数数量,检查 PostgreSQL 参数限制
+            const first_row_type_info = @typeInfo(@TypeOf(rows[0]));
+            const column_count = first_row_type_info.@"struct".fields.len;
+            const total_params = rows.len * column_count;
+            
+            // PostgreSQL 最大参数限制: 65535
+            if (total_params > 65535) {
+                return error.ExceedsPostgreSQLParamLimit;
+            }
+
+            // AC1.5.1: 内存优化 - 预分配容量
+            try self.values_list.ensureTotalCapacity(
+                self.allocator,
+                self.values_list.items.len + rows.len,
+            );
+
             // 遍历每一行
             for (rows) |row| {
                 _ = try self.value(row);
@@ -745,13 +767,25 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 构建 INSERT SQL 语句
+        /// 估算 SQL 语句大小
+        fn estimateSQLSize(self: *Self) usize {
+            const base_size = 100; // INSERT INTO table_name ...
+            const cols_size = self.columns.items.len * 20; // 列名平均长度
+            const row_size = self.columns.items.len * 5; // 每个占位符 "$123, "
+            const total_rows = self.values_list.items.len;
+            return base_size + cols_size + (row_size * total_rows);
+        }
+
         pub fn build(self: *Self) ![]const u8 {
             if (self.columns.items.len == 0 or self.values_list.items.len == 0) {
                 return error.NoValuesToInsert;
             }
 
+            // AC1.5.2: 内存优化 - 预估并预分配 SQL 缓冲区
+            const estimated_size = self.estimateSQLSize();
             var buf = std.ArrayList(u8){};
             errdefer buf.deinit(self.allocator);
+            try buf.ensureTotalCapacity(self.allocator, estimated_size);
 
             // INSERT INTO table (columns)
             try buf.appendSlice(self.allocator, "INSERT INTO ");
@@ -765,7 +799,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 
             try buf.appendSlice(self.allocator, ") VALUES ");
 
-            // VALUES (...)
+            // AC1.5.2: 多行 VALUES (...), (...), (...)
             var param_index: usize = 1;
             for (self.values_list.items, 0..) |_, row_idx| {
                 if (row_idx > 0) try buf.appendSlice(self.allocator, ", ");
@@ -826,7 +860,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 }
             }
 
-            // RETURNING (PostgreSQL/SQLite)
+            // AC1.5.3: RETURNING 子句支持批量返回
             if (self.returning_columns) |ret_cols| {
                 try buf.appendSlice(self.allocator, " RETURNING ");
                 for (ret_cols, 0..) |col, i| {

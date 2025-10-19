@@ -238,6 +238,46 @@ pub fn build(b: *std.Build) void {
     // 将 pool 测试添加到主测试步骤
     test_step.dependOn(&run_pool_tests.step);
 
+    // Story 1.3: 列选择和 DISTINCT 测试
+    const column_distinct_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/column_distinct_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    column_distinct_test_module.addImport("zorm", zorm_module);
+
+    const column_distinct_tests = b.addTest(.{
+        .root_module = column_distinct_test_module,
+    });
+
+    const run_column_distinct_tests = b.addRunArtifact(column_distinct_tests);
+    const column_distinct_test_step = b.step("test-column-distinct", "Run Story 1.3 column and distinct tests");
+    column_distinct_test_step.dependOn(&run_column_distinct_tests.step);
+
+    // 将列选择测试添加到主测试步骤
+    test_step.dependOn(&run_column_distinct_tests.step);
+
+    // Story 1.4 & 1.5: INSERT 查询测试
+    const insert_query_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/insert_query_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    insert_query_test_module.addImport("zorm", zorm_module);
+
+    const insert_query_tests = b.addTest(.{
+        .root_module = insert_query_test_module,
+    });
+
+    const run_insert_query_tests = b.addRunArtifact(insert_query_tests);
+    const insert_query_test_step = b.step("test-insert-query", "Run Story 1.4 & 1.5 INSERT query tests");
+    insert_query_test_step.dependOn(&run_insert_query_tests.step);
+
+    // 将 INSERT 查询测试添加到主测试步骤
+    test_step.dependOn(&run_insert_query_tests.step);
+
     // Examples 测试
     const examples_test_module = b.createModule(.{
         .root_source_file = b.path("examples/tests/setup_test.zig"),

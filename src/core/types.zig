@@ -61,12 +61,32 @@ pub const UUID = [16]u8;
 ///
 /// 使用 Unix 时间戳 (i64) 存储带时区的时间戳。
 /// 单位: 秒或毫秒 (根据应用需求)
-pub const TimestampTz = i64;
+pub const TimestampTz = struct {
+    value: i64,
+
+    pub fn init(timestamp: i64) TimestampTz {
+        return .{ .value = timestamp };
+    }
+
+    pub fn fromUnixTimestamp(unix_ts: i64) TimestampTz {
+        return .{ .value = unix_ts };
+    }
+};
 
 /// TIMESTAMP WITHOUT TIME ZONE 类型
 ///
 /// 使用 i64 存储不带时区的时间戳。
-pub const Timestamp = i64;
+pub const Timestamp = struct {
+    value: i64,
+
+    pub fn init(timestamp: i64) Timestamp {
+        return .{ .value = timestamp };
+    }
+
+    pub fn fromUnixTimestamp(unix_ts: i64) Timestamp {
+        return .{ .value = unix_ts };
+    }
+};
 
 pub fn getFields(comptime T: type) []const std.builtin.Type.StructField {
     const type_info = @typeInfo(T);
@@ -144,11 +164,12 @@ pub fn getTableName(comptime T: type) []const u8 {
 /// }
 /// ```
 pub fn zigToSQLType(comptime T: type) []const u8 {
-    // 优先检查 PostgreSQL 特有类型
-    if (T == JSONB) return "JSONB";
-    if (T == UUID) return "UUID";
-    if (T == TimestampTz) return "TIMESTAMP WITH TIME ZONE";
-    if (T == Timestamp) return "TIMESTAMP WITHOUT TIME ZONE";
+    // 优先检查 PostgreSQL 特有类型（使用类型名称匹配，因为现在是包装类型）
+    const type_name = @typeName(T);
+    if (std.mem.eql(u8, type_name, "types.JSONB")) return "JSONB";
+    if (std.mem.eql(u8, type_name, "types.UUID")) return "UUID";
+    if (std.mem.eql(u8, type_name, "types.TimestampTz")) return "TIMESTAMP WITH TIME ZONE";
+    if (std.mem.eql(u8, type_name, "types.Timestamp")) return "TIMESTAMP WITHOUT TIME ZONE";
 
     return switch (@typeInfo(T)) {
         // 整数类型
@@ -317,6 +338,22 @@ pub fn validateType(comptime T: type) void {
 /// 如果是可选类型返回 true,否则返回 false
 pub fn isOptional(comptime field_type: type) bool {
     return @typeInfo(field_type) == .optional;
+}
+
+/// 检查类型是否为整数类型 (i8, i16, i32, i64, u8, u16, u32, u64 等)
+///
+/// ## 参数
+/// - `field_type`: 字段类型 (支持可选类型)
+///
+/// ## 返回值
+/// 如果是整数类型返回 true,否则返回 false
+pub fn isIntegerType(comptime field_type: type) bool {
+    const base_type = if (@typeInfo(field_type) == .optional)
+        @typeInfo(field_type).optional.child
+    else
+        field_type;
+
+    return @typeInfo(base_type) == .int;
 }
 
 // ============ PostgreSQL 类型序列化和反序列化 (Story 3.6) ============

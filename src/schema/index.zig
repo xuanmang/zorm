@@ -116,8 +116,7 @@ pub const Index = struct {
         // IF NOT EXISTS (PostgreSQL 和 SQLite 支持)
         if (self.if_not_exists) {
             switch (dialect) {
-                .postgresql, .sqlite => try writer.writeAll("IF NOT EXISTS "),
-                .mysql => {}, // MySQL 不支持 IF NOT EXISTS
+                .postgresql => {}, // MySQL 不支持 IF NOT EXISTS
             }
         }
 
@@ -273,110 +272,6 @@ test "Index: PostgreSQL GIN 索引" {
     defer testing.allocator.free(sql);
 
     try testing.expectEqualStrings("CREATE INDEX idx_posts_tags ON posts USING GIN (tags)", sql);
-}
-
-test "Index: MySQL 普通索引 SQL" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-
-    const sql = try idx.toSQL(.mysql);
-    defer testing.allocator.free(sql);
-
-    try testing.expectEqualStrings("CREATE INDEX idx_users_email ON users (email)", sql);
-}
-
-test "Index: MySQL 唯一索引 SQL" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-    _ = idx.setUnique();
-
-    const sql = try idx.toSQL(.mysql);
-    defer testing.allocator.free(sql);
-
-    try testing.expectEqualStrings("CREATE UNIQUE INDEX idx_users_email ON users (email)", sql);
-}
-
-test "Index: MySQL 多列索引 SQL" {
-    var idx = try Index.init(testing.allocator, "idx_users_name_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("name");
-    _ = try idx.addColumn("email");
-
-    const sql = try idx.toSQL(.mysql);
-    defer testing.allocator.free(sql);
-
-    try testing.expectEqualStrings("CREATE INDEX idx_users_name_email ON users (name, email)", sql);
-}
-
-test "Index: MySQL 忽略 IF NOT EXISTS" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-    _ = idx.setIfNotExists();
-
-    const sql = try idx.toSQL(.mysql);
-    defer testing.allocator.free(sql);
-
-    // MySQL 不支持 IF NOT EXISTS，应该被忽略
-    try testing.expectEqualStrings("CREATE INDEX idx_users_email ON users (email)", sql);
-}
-
-test "Index: MySQL 忽略非 BTREE 索引方法" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-    _ = idx.setMethod(.hash);
-
-    const sql = try idx.toSQL(.mysql);
-    defer testing.allocator.free(sql);
-
-    // MySQL 不支持 USING HASH，应该被忽略
-    try testing.expectEqualStrings("CREATE INDEX idx_users_email ON users (email)", sql);
-}
-
-test "Index: SQLite 普通索引 SQL" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-
-    const sql = try idx.toSQL(.sqlite);
-    defer testing.allocator.free(sql);
-
-    try testing.expectEqualStrings("CREATE INDEX idx_users_email ON users (email)", sql);
-}
-
-test "Index: SQLite 唯一索引 SQL" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-    _ = idx.setUnique();
-
-    const sql = try idx.toSQL(.sqlite);
-    defer testing.allocator.free(sql);
-
-    try testing.expectEqualStrings("CREATE UNIQUE INDEX idx_users_email ON users (email)", sql);
-}
-
-test "Index: SQLite IF NOT EXISTS" {
-    var idx = try Index.init(testing.allocator, "idx_users_email", "users");
-    defer idx.deinit();
-
-    _ = try idx.addColumn("email");
-    _ = idx.setIfNotExists();
-
-    const sql = try idx.toSQL(.sqlite);
-    defer testing.allocator.free(sql);
-
-    try testing.expectEqualStrings("CREATE INDEX IF NOT EXISTS idx_users_email ON users (email)", sql);
 }
 
 test "Index: 复杂场景 - PostgreSQL 唯一多列 GIN 索引" {

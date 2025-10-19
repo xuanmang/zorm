@@ -207,21 +207,29 @@ fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: 
     // 列名
     try writer.print("{s} ", .{col.name});
 
-    // 列类型
-    const sql_type = col.column_type.sqlType(dialect);
-    try writer.writeAll(sql_type);
+    // 列类型（PostgreSQL 自增列使用 SERIAL/BIGSERIAL）
+    if (col.auto_increment and dialect == .postgresql) {
+        const serial_type = switch (col.column_type) {
+            .bigint => "BIGSERIAL",
+            .int => "SERIAL",
+            .smallint => "SMALLSERIAL",
+            else => col.column_type.sqlType(dialect),
+        };
+        try writer.writeAll(serial_type);
+    } else {
+        const sql_type = col.column_type.sqlType(dialect);
+        try writer.writeAll(sql_type);
+    }
 
     // 主键 (只有单列主键时才在列定义中声明)
     if (col.primary_key and !has_composite_pk) {
         try writer.writeAll(" PRIMARY KEY");
     }
 
-    // 自增
+    // 自增（PostgreSQL 的 SERIAL 已包含自增语义）
     if (col.auto_increment) {
         switch (dialect) {
-            .postgresql => try writer.writeAll(" GENERATED ALWAYS AS IDENTITY"),
-            .mysql => try writer.writeAll(" AUTO_INCREMENT"),
-            .sqlite => {}, // SQLite 的 INTEGER PRIMARY KEY 自动自增
+            .postgresql => {}, // SQLite 的 INTEGER PRIMARY KEY 自动自增
         }
     }
 
@@ -344,30 +352,9 @@ test "Table: PostgreSQL CREATE TABLE SQL" {
 
     // 验证 SQL 包含关键部分
     try testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
-    try testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY") != null);
-    try testing.expect(std.mem.indexOf(u8, sql, "GENERATED ALWAYS AS IDENTITY") != null);
+    try testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
     try testing.expect(std.mem.indexOf(u8, sql, "name VARCHAR NOT NULL") != null);
     try testing.expect(std.mem.indexOf(u8, sql, "email VARCHAR UNIQUE") != null);
-}
-
-test "Table: MySQL CREATE TABLE SQL" {
-    var table = try Table.init(testing.allocator, "posts");
-    defer table.deinit();
-
-    var id_col = Column.init("id", .bigint);
-    _ = id_col.setPrimaryKey().setAutoIncrement();
-    _ = try table.addColumn(id_col);
-
-    var title_col = Column.init("title", .varchar);
-    _ = title_col.setNotNull();
-    _ = try table.addColumn(title_col);
-
-    const sql = try table.toSQL(.mysql);
-    defer testing.allocator.free(sql);
-
-    try testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE posts") != null);
-    try testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY AUTO_INCREMENT") != null);
-    try testing.expect(std.mem.indexOf(u8, sql, "title VARCHAR NOT NULL") != null);
 }
 
 test "Table: 外键约束" {

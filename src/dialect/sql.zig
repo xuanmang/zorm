@@ -6,7 +6,7 @@
 //! - generatePlaceholders: 生成占位符数组
 //! - buildInClause: 构建 IN 子句
 //!
-//! 所有函数都支持编译时和运行时使用,并考虑不同数据库方言的差异。
+//! 所有函数都支持编译时和运行时使用,专为 PostgreSQL 优化。
 
 const std = @import("std");
 const Dialect = @import("dialect.zig").Dialect;
@@ -18,15 +18,13 @@ const Allocator = std.mem.Allocator;
 
 /// 转义 SQL 标识符 (表名、列名等)
 ///
-/// 根据不同方言使用不同的引号字符:
-/// - PostgreSQL/SQLite: "identifier"
-/// - MySQL: `identifier`
+/// PostgreSQL 使用双引号包裹标识符: "identifier"
 ///
-/// 如果标识符内包含引号字符,会进行双写转义。
+/// 如果标识符内包含双引号,会进行双写转义。
 ///
 /// 参数:
 /// - allocator: 内存分配器
-/// - dialect: 数据库方言
+/// - dialect: 数据库方言 (仅支持 PostgreSQL)
 /// - identifier: 需要转义的标识符
 ///
 /// 返回: 转义后的标识符字符串
@@ -91,15 +89,14 @@ pub fn escapeIdentifier(
 /// 转义 SQL 字符串字面量
 ///
 /// 将字符串转义为安全的 SQL 字符串字面量格式。
-/// 所有方言都使用单引号包裹,单引号需要双写转义。
+/// PostgreSQL 使用单引号包裹,单引号需要双写转义。
 /// 同时处理特殊字符:
 /// - 单引号 ' -> ''
-/// - 反斜杠 \ -> \\ (MySQL 需要)
 /// - NULL 字节、换行符等控制字符
 ///
 /// 参数:
 /// - allocator: 内存分配器
-/// - dialect: 数据库方言
+/// - dialect: 数据库方言 (仅支持 PostgreSQL)
 /// - str: 需要转义的字符串
 ///
 /// 返回: 转义后的字符串字面量 (包含单引号)
@@ -117,6 +114,8 @@ pub fn escapeString(
     comptime dialect: Dialect,
     str: []const u8,
 ) ![]const u8 {
+    _ = dialect; // PostgreSQL 专用
+
     // 检查是否需要转义
     var needs_escape = false;
     for (str) |c| {
@@ -140,17 +139,12 @@ pub fn escapeString(
     for (str) |c| {
         switch (c) {
             '\'' => {
-                // 单引号双写转义 (所有方言通用)
+                // 单引号双写转义 (PostgreSQL 标准)
                 try result.appendSlice("''");
             },
             '\\' => {
-                // MySQL 需要转义反斜杠,PostgreSQL/SQLite 不需要
-                // 为安全起见,统一转义
-                if (dialect == .mysql) {
-                    try result.appendSlice("\\\\");
-                } else {
-                    try result.append('\\');
-                }
+                // PostgreSQL 不需要转义反斜杠 (使用标准 SQL)
+                try result.append('\\');
             },
             0 => {
                 // NULL 字节: 使用 \0 表示
@@ -185,13 +179,11 @@ pub fn escapeString(
 
 /// 生成占位符数组
 ///
-/// 根据不同方言生成相应的占位符:
-/// - PostgreSQL: $1, $2, $3, ...
-/// - MySQL/SQLite: ?, ?, ?, ...
+/// PostgreSQL 使用位置占位符: $1, $2, $3, ...
 ///
 /// 参数:
 /// - allocator: 内存分配器
-/// - dialect: 数据库方言
+/// - dialect: 数据库方言 (仅支持 PostgreSQL)
 /// - count: 占位符数量
 /// - start_index: 起始索引 (默认为 1)
 ///
@@ -201,9 +193,6 @@ pub fn escapeString(
 /// ```zig
 /// const placeholders = try generatePlaceholders(allocator, .postgresql, 3, 1);
 /// // 结果: ["$1", "$2", "$3"]
-///
-/// const placeholders2 = try generatePlaceholders(allocator, .mysql, 3, 1);
-/// // 结果: ["?", "?", "?"]
 /// ```
 pub fn generatePlaceholders(
     allocator: Allocator,
@@ -211,6 +200,8 @@ pub fn generatePlaceholders(
     count: usize,
     start_index: usize,
 ) ![]const []const u8 {
+    _ = dialect; // PostgreSQL 专用
+
     if (count == 0) {
         return &[_][]const u8{};
     }
@@ -218,23 +209,13 @@ pub fn generatePlaceholders(
     var placeholders = try allocator.alloc([]const u8, count);
     errdefer allocator.free(placeholders);
 
-    switch (dialect) {
-        .postgresql => {
-            // PostgreSQL: $1, $2, $3, ...
-            for (0..count) |i| {
-                placeholders[i] = try std.fmt.allocPrint(
-                    allocator,
-                    "${d}",
-                    .{start_index + i},
-                );
-            }
-        },
-        .mysql, .sqlite => {
-            // MySQL/SQLite: ?, ?, ?, ...
-            for (0..count) |i| {
-                placeholders[i] = try allocator.dupe(u8, "?");
-            }
-        },
+    // PostgreSQL: $1, $2, $3, ...
+    for (0..count) |i| {
+        placeholders[i] = try std.fmt.allocPrint(
+            allocator,
+            "${d}",
+            .{start_index + i},
+        );
     }
 
     return placeholders;
@@ -254,11 +235,11 @@ pub fn freePlaceholders(allocator: Allocator, placeholders: []const []const u8) 
 
 /// 构建 IN 子句
 ///
-/// 生成 SQL IN 子句,包含指定数量的占位符。
+/// 生成 PostgreSQL IN 子句,包含指定数量的位置占位符。
 ///
 /// 参数:
 /// - allocator: 内存分配器
-/// - dialect: 数据库方言
+/// - dialect: 数据库方言 (仅支持 PostgreSQL)
 /// - count: IN 子句中的值数量
 /// - start_index: 起始占位符索引 (默认为 1)
 ///
@@ -268,9 +249,6 @@ pub fn freePlaceholders(allocator: Allocator, placeholders: []const []const u8) 
 /// ```zig
 /// const in_clause = try buildInClause(allocator, .postgresql, 3, 1);
 /// // 结果: "IN ($1, $2, $3)"
-///
-/// const in_clause2 = try buildInClause(allocator, .mysql, 3, 1);
-/// // 结果: "IN (?, ?, ?)"
 /// ```
 pub fn buildInClause(
     allocator: Allocator,
@@ -278,6 +256,8 @@ pub fn buildInClause(
     count: usize,
     start_index: usize,
 ) ![]const u8 {
+    _ = dialect; // PostgreSQL 专用
+
     if (count == 0) {
         return allocator.dupe(u8, "IN ()");
     }
@@ -287,25 +267,12 @@ pub fn buildInClause(
 
     try result.appendSlice("IN (");
 
-    switch (dialect) {
-        .postgresql => {
-            // PostgreSQL: IN ($1, $2, $3)
-            for (0..count) |i| {
-                if (i > 0) {
-                    try result.appendSlice(", ");
-                }
-                try std.fmt.format(result.writer(), "${d}", .{start_index + i});
-            }
-        },
-        .mysql, .sqlite => {
-            // MySQL/SQLite: IN (?, ?, ?)
-            for (0..count) |i| {
-                if (i > 0) {
-                    try result.appendSlice(", ");
-                }
-                try result.append('?');
-            }
-        },
+    // PostgreSQL: IN ($1, $2, $3)
+    for (0..count) |i| {
+        if (i > 0) {
+            try result.appendSlice(", ");
+        }
+        try std.fmt.format(result.writer(), "${d}", .{start_index + i});
     }
 
     try result.append(')');

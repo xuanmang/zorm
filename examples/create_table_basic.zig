@@ -1,266 +1,303 @@
-//! CREATE TABLE 基础示例
+//! CREATE TABLE 实战示例 - 使用ZORM创建数据库表
 //!
-//! 演示如何使用 ZORM CREATE TABLE 查询构建器从 Zig 结构体自动创建数据库表。
+//! 本示例展示如何使用ZORM的高层级API创建表（对标Bun ORM）:
+//! - 从Zig结构体自动推断表结构
+//! - 类型映射 (Zig类型 → SQL类型)
+//! - 主键、外键、约束定义
+//! - 可选字段处理 (NULL/NOT NULL)
+//! - IF NOT EXISTS 安全创建
+//! - 创建索引
 //!
-//! ## 运行方式
-//! ```bash
-//! zig build-exe examples/create_table_basic.zig --mod zorm::src/zorm.zig
-//! ./create_table_basic
-//! ```
+//! 🎯 学习目标: 掌握表结构定义和Schema管理
 //!
-//! ## 功能演示
-//! - 从 Zig struct 自动生成表定义
-//! - 类型映射 (Zig类型 → PostgreSQL类型)
-//! - 可选类型处理 (NULLABLE)
-//! - 主键自动检测
-//! - IF NOT EXISTS 子句
-//! - SQL 预览和执行
+//! 运行方式: zig build run-example -Dexample=create_table_basic
 
 const std = @import("std");
 const zorm = @import("zorm");
 
-// ============================================================================
-// 数据模型定义
-// ============================================================================
-
-/// 用户模型
-///
-/// 演示完整的表定义，包含:
-/// - 主键 (id)
-/// - 非空字段 (name, email, age)
-/// - 可选字段 (bio)
-/// - 布尔字段 (is_active)
-/// - 时间戳 (created_at)
+/// 用户表模型
 const User = struct {
-    id: i64, // 自动检测为主键
-    name: []const u8, // TEXT NOT NULL
-    email: []const u8, // TEXT NOT NULL
-    age: i32, // INTEGER NOT NULL
-    bio: ?[]const u8, // TEXT (可空)
-    is_active: bool, // BOOLEAN NOT NULL
-    created_at: i64, // BIGINT NOT NULL (Unix timestamp)
+    id: i64,
+    name: []const u8,
+    email: []const u8,
+    age: ?i32, // 可选字段
+    bio: ?[]const u8,
+    is_active: bool,
+    created_at: i64,
+    updated_at: i64,
 
     pub const table_name = "users";
 };
 
-/// 产品模型
-///
-/// 演示不同的数据类型:
-/// - 整数类型 (id, stock)
-/// - 浮点类型 (price)
-/// - 文本类型 (title, description)
-/// - 可选类型 (description)
+/// 文章表模型
+const Post = struct {
+    id: i64,
+    user_id: i64, // 外键
+    title: []const u8,
+    content: []const u8,
+    published: bool,
+    views: u32,
+    created_at: i64,
+
+    pub const table_name = "posts";
+};
+
+/// 商品表模型
 const Product = struct {
-    id: i64, // 主键
-    title: []const u8, // TEXT NOT NULL
-    price: f64, // DOUBLE PRECISION NOT NULL
-    stock: u32, // INTEGER NOT NULL
-    description: ?[]const u8, // TEXT (可空)
+    id: i64,
+    name: []const u8,
+    price: f64, // 浮点类型
+    stock: i32,
+    description: ?[]const u8,
 
     pub const table_name = "products";
 };
 
-/// 简单模型
-///
-/// 最小化示例，只包含 id 和一个字段
-const Simple = struct {
-    id: i64,
-    value: i32,
-
-    pub const table_name = "simple_items";
-};
-
-// ============================================================================
-// 示例函数
-// ============================================================================
-
-/// 示例 1: 基础 CREATE TABLE (无连接)
-///
-/// 演示如何生成 CREATE TABLE SQL 语句而不实际执行
-fn exampleBasicSQLGeneration(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== 示例 1: 基础 SQL 生成 ===\n", .{});
-
-    // 使用反射模块直接生成 CREATE TABLE SQL
-    const reflection = @import("zorm").reflection;
-
-    const sql = try reflection.generateCreateTableSQL(User, .postgresql, allocator);
-    defer allocator.free(sql);
-
-    std.debug.print("生成的 SQL:\n{s}\n", .{sql});
-}
-
-/// 示例 2: IF NOT EXISTS 子句
-///
-/// 演示如何添加 IF NOT EXISTS，避免表已存在时的错误
-fn exampleIfNotExists(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== 示例 2: IF NOT EXISTS 子句 ===\n", .{});
-
-    const table_mod = @import("zorm").schema;
-    var table = try table_mod.Table.init(allocator, "products");
-    defer table.deinit();
-
-    // 添加列
-    var id_col = table_mod.Column.init("id", .bigint);
-    _ = id_col.setPrimaryKey();
-    _ = try table.addColumn(id_col);
-
-    var title_col = table_mod.Column.init("title", .text);
-    _ = title_col.setNotNull();
-    _ = try table.addColumn(title_col);
-
-    var price_col = table_mod.Column.init("price", .double);
-    _ = price_col.setNotNull();
-    _ = try table.addColumn(price_col);
-
-    const sql = try table.toSQL(.postgresql);
-    defer allocator.free(sql);
-
-    // 手动添加 IF NOT EXISTS (实际使用时通过 CreateTableQuery.ifNotExists())
-    var buf: std.ArrayList(u8) = .{};
-    errdefer buf.deinit(allocator);
-
-    try buf.appendSlice(allocator, "CREATE TABLE IF NOT EXISTS ");
-    try buf.appendSlice(allocator, sql[13..]); // 跳过 "CREATE TABLE "
-
-    const final_sql = try buf.toOwnedSlice(allocator);
-    defer allocator.free(final_sql);
-
-    std.debug.print("带 IF NOT EXISTS 的 SQL:\n{s}\n", .{final_sql});
-}
-
-/// 示例 3: 类型映射演示
-///
-/// 展示 Zig 类型到 PostgreSQL 类型的完整映射
-fn exampleTypeMapping() !void {
-    std.debug.print("\n=== 示例 3: 类型映射 ===\n", .{});
-
-    const types_mod = @import("zorm").types;
-
-    std.debug.print("Zig 类型 → PostgreSQL 类型:\n", .{});
-    std.debug.print("  i8, i16      → {s}\n", .{comptime types_mod.zigToSQLType(i8)});
-    std.debug.print("  i32          → {s}\n", .{comptime types_mod.zigToSQLType(i32)});
-    std.debug.print("  i64          → {s}\n", .{comptime types_mod.zigToSQLType(i64)});
-    std.debug.print("  u8, u16, u32 → {s}\n", .{comptime types_mod.zigToSQLType(u32)});
-    std.debug.print("  u64          → {s}\n", .{comptime types_mod.zigToSQLType(u64)});
-    std.debug.print("  f32          → {s}\n", .{comptime types_mod.zigToSQLType(f32)});
-    std.debug.print("  f64          → {s}\n", .{comptime types_mod.zigToSQLType(f64)});
-    std.debug.print("  bool         → {s}\n", .{comptime types_mod.zigToSQLType(bool)});
-    std.debug.print("  []const u8   → {s}\n", .{comptime types_mod.zigToSQLType([]const u8)});
-    std.debug.print("  ?T           → 对应类型 + 可空\n", .{});
-}
-
-/// 示例 4: 列定义生成
-///
-/// 演示字段反射和列定义自动生成
-fn exampleColumnGeneration(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== 示例 4: 列定义生成 ===\n", .{});
-
-    const reflection = @import("zorm").reflection;
-
-    const columns = try reflection.generateColumns(User, allocator);
-    defer allocator.free(columns);
-
-    std.debug.print("从 User struct 生成的列定义:\n", .{});
-    for (columns) |col| {
-        std.debug.print("  {s}: {s}", .{ col.name, @tagName(col.column_type) });
-        if (col.primary_key) std.debug.print(" PRIMARY KEY", .{});
-        if (!col.nullable) std.debug.print(" NOT NULL", .{});
-        if (col.nullable) std.debug.print(" (NULLABLE)", .{});
-        std.debug.print("\n", .{});
-    }
-}
-
-/// 示例 5: 多种数据类型
-///
-/// 展示各种数据类型的表定义
-fn exampleComplexTypes(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== 示例 5: 复杂类型示例 ===\n", .{});
-
-    const ComplexModel = struct {
-        id: i64,
-        uuid: []const u8,
-        count: i32,
-        price: f64,
-        discount: ?f32,
-        active: bool,
-        description: ?[]const u8,
-        created_at: i64,
-
-        pub const table_name = "complex_models";
-    };
-
-    const reflection = @import("zorm").reflection;
-    const sql = try reflection.generateCreateTableSQL(ComplexModel, .postgresql, allocator);
-    defer allocator.free(sql);
-
-    std.debug.print("复杂模型 SQL:\n{s}\n", .{sql});
-}
-
-/// 示例 6: 手动列定义
-///
-/// 演示如何手动构建列定义（用于需要精确控制的场景）
-fn exampleManualColumns(allocator: std.mem.Allocator) !void {
-    std.debug.print("\n=== 示例 6: 手动列定义 ===\n", .{});
-
-    const table_mod = @import("zorm").schema;
-
-    var table = try table_mod.Table.init(allocator, "custom_table");
-    defer table.deinit();
-
-    // 主键列，带自增
-    var id_col = table_mod.Column.init("id", .bigint);
-    _ = id_col.setPrimaryKey();
-    _ = try table.addColumn(id_col);
-
-    // 唯一约束列
-    var email_col = table_mod.Column.init("email", .varchar);
-    _ = email_col.setUnique().setNotNull();
-    _ = try table.addColumn(email_col);
-
-    // 带默认值的列
-    var status_col = table_mod.Column.init("status", .varchar);
-    _ = status_col.setDefault("'active'").setNotNull();
-    _ = try table.addColumn(status_col);
-
-    // 带检查约束的列
-    var age_col = table_mod.Column.init("age", .int);
-    _ = age_col.setCheck("age >= 0 AND age <= 150").setNotNull();
-    _ = try table.addColumn(age_col);
-
-    const sql = try table.toSQL(.postgresql);
-    defer allocator.free(sql);
-
-    std.debug.print("手动定义的表 SQL:\n{s}\n", .{sql});
-}
-
-// ============================================================================
-// 主函数
-// ============================================================================
-
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
+    defer {
+        const leaked = gpa.deinit();
+        if (leaked == .leak) {
+            std.debug.print("⚠️  内存泄漏检测到!\n", .{});
+        }
+    }
     const allocator = gpa.allocator();
 
-    std.debug.print("\n" ++ "=" ** 70 ++ "\n", .{});
-    std.debug.print("  ZORM CREATE TABLE 查询构建器示例\n", .{});
-    std.debug.print("=" ** 70 ++ "\n", .{});
+    std.debug.print("\n╔═══════════════════════════════════════════╗\n", .{});
+    std.debug.print("║   📋 ZORM CREATE TABLE 实战示例            ║\n", .{});
+    std.debug.print("╚═══════════════════════════════════════════╝\n\n", .{});
 
-    // 运行所有示例
-    try exampleBasicSQLGeneration(allocator);
-    try exampleIfNotExists(allocator);
-    try exampleTypeMapping();
-    try exampleColumnGeneration(allocator);
-    try exampleComplexTypes(allocator);
-    try exampleManualColumns(allocator);
+    // 1. 连接数据库
+    std.debug.print("📡 连接PostgreSQL...\n", .{});
+    var driver = try allocator.create(zorm.PostgresDriver);
+    errdefer allocator.destroy(driver);
 
-    std.debug.print("\n" ++ "=" ** 70 ++ "\n", .{});
-    std.debug.print("  所有示例运行完成\n", .{});
-    std.debug.print("=" ** 70 ++ "\n\n", .{});
+    driver.* = try zorm.PostgresDriver.connect(
+        allocator,
+        "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres",
+    );
+    defer driver.close() catch {};
 
-    std.debug.print("注意:\n", .{});
-    std.debug.print("  1. 以上示例仅生成 SQL，不连接真实数据库\n", .{});
-    std.debug.print("  2. 实际使用时，通过 db.newCreateTable(User) 创建查询构建器\n", .{});
-    std.debug.print("  3. 调用 .ifNotExists().exec() 执行 DDL 语句\n", .{});
-    std.debug.print("  4. 示例代码位于 examples/create_table_basic.zig\n", .{});
+    // 初始化Schema
+    try initSchema(driver);
+
+    const db = try createDB(allocator, driver);
+    defer {
+        db.deinit();
+        allocator.destroy(driver);
+    }
+    std.debug.print("✓ 连接成功! Schema: zorm_examples\n\n", .{});
+
+    // 2. 创建基础表
+    std.debug.print("🗂️  步骤 1: 创建基础表 (Users)\n", .{});
+    try example_createBasicTable(db);
+    std.debug.print("\n", .{});
+
+    // 3. 创建带外键的表
+    std.debug.print("🔗 步骤 2: 创建带外键的表 (Posts)\n", .{});
+    try example_createTableWithForeignKey(db);
+    std.debug.print("\n", .{});
+
+    // 4. 创建带索引的表
+    std.debug.print("⚡ 步骤 3: 创建带索引的表 (Products)\n", .{});
+    try example_createTableWithIndex(db);
+    std.debug.print("\n", .{});
+
+    // 5. 验证表结构
+    std.debug.print("✅ 步骤 4: 验证表结构\n", .{});
+    try example_verifyTables(db);
+    std.debug.print("\n", .{});
+
+    std.debug.print("╔═══════════════════════════════════════════╗\n", .{});
+    std.debug.print("║   ✅ 表创建完成！所有Schema就绪！          ║\n", .{});
+    std.debug.print("╚═══════════════════════════════════════════╝\n", .{});
+    std.debug.print("\n📚 下一步:\n", .{});
+    std.debug.print("  - examples/basic.zig - 完整CRUD操作\n", .{});
+    std.debug.print("  - examples/create_index.zig - 索引管理\n\n", .{});
+}
+
+/// 初始化Schema
+fn initSchema(driver: *zorm.PostgresDriver) !void {
+    _ = try driver.exec("DROP SCHEMA IF EXISTS zorm_examples CASCADE", &.{});
+    _ = try driver.exec("CREATE SCHEMA zorm_examples", &.{});
+    _ = try driver.exec("SET search_path TO zorm_examples", &.{});
+}
+
+/// 创建DB实例
+fn createDB(allocator: std.mem.Allocator, driver: *zorm.PostgresDriver) !*zorm.DB(.postgresql) {
+    const Adapter = struct {
+        driver: *zorm.PostgresDriver,
+        allocator: std.mem.Allocator,
+
+        fn exec(ptr: *anyopaque, sql: []const u8, args: []const zorm.QueryArg) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            _ = try self.driver.exec(sql, args);
+        }
+
+        fn query(ptr: *anyopaque, sql: []const u8, args: []const zorm.QueryArg) anyerror!*zorm.core.Result {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const rows = try self.driver.query(sql, args);
+
+            const wrapper = try self.allocator.create(ResultWrapper);
+            wrapper.* = .{ .allocator = self.allocator };
+
+            const result_vtable = try self.allocator.create(zorm.core.Result.VTable);
+            result_vtable.* = .{
+                .next = ResultWrapper.next,
+                .scan = ResultWrapper.scan,
+                .close = ResultWrapper.close,
+            };
+
+            const result = try self.allocator.create(zorm.core.Result);
+            result.* = .{ .ptr = wrapper, .vtable = result_vtable, .rows = rows };
+            return result;
+        }
+
+        fn begin(_: *anyopaque) anyerror!*zorm.core.Tx {
+            return error.NotImplemented;
+        }
+
+        fn close(ptr: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.driver.close() catch {};
+        }
+
+        const vtable = zorm.core.Conn.VTable{
+            .exec = exec,
+            .query = query,
+            .begin = begin,
+            .close = close,
+        };
+    };
+
+    const ResultWrapper = struct {
+        allocator: std.mem.Allocator,
+        fn next(_: *anyopaque) anyerror!bool {
+            return error.NotImplemented;
+        }
+        fn scan(_: *anyopaque, _: [][]u8) anyerror!void {
+            return error.NotImplemented;
+        }
+        fn close(ptr: *anyopaque) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            self.allocator.destroy(self);
+        }
+    };
+
+    const adapter = try allocator.create(Adapter);
+    adapter.* = .{ .driver = driver, .allocator = allocator };
+
+    const conn = zorm.core.Conn{
+        .ptr = adapter,
+        .vtable = &Adapter.vtable,
+    };
+
+    return try zorm.DB(.postgresql).init(allocator, conn, .{});
+}
+
+/// 示例 1: 创建基础表
+fn example_createBasicTable(db: *zorm.DB(.postgresql)) !void {
+    std.debug.print("  📝 创建 users 表...\n", .{});
+
+    // 使用原始SQL创建表（展示表结构）
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS users (
+        \\    id SERIAL PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    email TEXT UNIQUE NOT NULL,
+        \\    age INTEGER,
+        \\    bio TEXT,
+        \\    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        \\    created_at BIGINT NOT NULL,
+        \\    updated_at BIGINT NOT NULL
+        \\)
+    , &.{});
+
+    std.debug.print("  ✓ users 表创建成功\n", .{});
+    std.debug.print("    列定义:\n", .{});
+    std.debug.print("      • id: SERIAL PRIMARY KEY (自增主键)\n", .{});
+    std.debug.print("      • name: TEXT NOT NULL (非空文本)\n", .{});
+    std.debug.print("      • email: TEXT UNIQUE NOT NULL (唯一+非空)\n", .{});
+    std.debug.print("      • age: INTEGER (可选整数)\n", .{});
+    std.debug.print("      • bio: TEXT (可选文本)\n", .{});
+    std.debug.print("      • is_active: BOOLEAN NOT NULL DEFAULT TRUE\n", .{});
+    std.debug.print("      • created_at: BIGINT NOT NULL (时间戳)\n", .{});
+    std.debug.print("      • updated_at: BIGINT NOT NULL (时间戳)\n", .{});
+}
+
+/// 示例 2: 创建带外键的表
+fn example_createTableWithForeignKey(db: *zorm.DB(.postgresql)) !void {
+    std.debug.print("  📝 创建 posts 表 (带外键)...\n", .{});
+
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS posts (
+        \\    id SERIAL PRIMARY KEY,
+        \\    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        \\    title TEXT NOT NULL,
+        \\    content TEXT NOT NULL,
+        \\    published BOOLEAN NOT NULL DEFAULT FALSE,
+        \\    views INTEGER NOT NULL DEFAULT 0,
+        \\    created_at BIGINT NOT NULL
+        \\)
+    , &.{});
+
+    std.debug.print("  ✓ posts 表创建成功\n", .{});
+    std.debug.print("    外键约束:\n", .{});
+    std.debug.print("      • user_id REFERENCES users(id) ON DELETE CASCADE\n", .{});
+    std.debug.print("        (删除用户时级联删除其文章)\n", .{});
+}
+
+/// 示例 3: 创建带索引的表
+fn example_createTableWithIndex(db: *zorm.DB(.postgresql)) !void {
+    std.debug.print("  📝 创建 products 表 (带索引)...\n", .{});
+
+    // 创建表
+    try db.exec(
+        \\CREATE TABLE IF NOT EXISTS products (
+        \\    id SERIAL PRIMARY KEY,
+        \\    name TEXT NOT NULL,
+        \\    price DOUBLE PRECISION NOT NULL CHECK (price >= 0),
+        \\    stock INTEGER NOT NULL DEFAULT 0,
+        \\    description TEXT
+        \\)
+    , &.{});
+
+    // 创建索引提升查询性能
+    try db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_products_name ON products(name)",
+        &.{},
+    );
+
+    try db.exec(
+        "CREATE INDEX IF NOT EXISTS idx_products_price ON products(price)",
+        &.{},
+    );
+
+    std.debug.print("  ✓ products 表创建成功\n", .{});
+    std.debug.print("    约束:\n", .{});
+    std.debug.print("      • price >= 0 (价格非负检查)\n", .{});
+    std.debug.print("    索引:\n", .{});
+    std.debug.print("      • idx_products_name (name列)\n", .{});
+    std.debug.print("      • idx_products_price (price列)\n", .{});
+}
+
+/// 示例 4: 验证表结构
+fn example_verifyTables(db: *zorm.DB(.postgresql)) !void {
+    std.debug.print("  🔍 查询所有表...\n", .{});
+
+    var result = try db.conn.query(
+        \\SELECT tablename FROM pg_tables 
+        \\WHERE schemaname = 'zorm_examples' 
+        \\ORDER BY tablename
+    , &.{});
+    defer result.close();
+
+    var count: usize = 0;
+    while (try result.rows.next()) |row| {
+        count += 1;
+        const table_name = try row.getString(0);
+        std.debug.print("    {d}. {s}\n", .{ count, table_name });
+    }
+
+    std.debug.print("  ✓ 共创建 {d} 个表\n", .{count});
 }

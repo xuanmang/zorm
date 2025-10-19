@@ -6,7 +6,7 @@
 //! ✅ 自动映射: 查询结果自动映射到结构体，无需手动解析
 //! ✅ 链式 API: 优雅的查询构建方式，代码更易读易维护
 //! ✅ SQL 注入防护: 自动参数化查询，杜绝 SQL 注入攻击
-//! ✅ 跨数据库: 方言系统支持 PostgreSQL/MySQL/SQLite
+//! ✅ 跨数据库: 方言系统支持 PostgreSQL
 //!
 //! 本示例对标 Golang Bun ORM，展示:
 //! ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -414,7 +414,7 @@ pub fn main() !void {
     std.debug.print("     • 无需担心字符串拼接漏洞\n", .{});
     std.debug.print("\n", .{});
     std.debug.print("  4. ✨ 跨数据库支持\n", .{});
-    std.debug.print("     • 方言系统: PostgreSQL/MySQL/SQLite\n", .{});
+    std.debug.print("     • 方言系统: PostgreSQL\n", .{});
     std.debug.print("     • 同一代码适配多种数据库\n", .{});
     std.debug.print("\n", .{});
 

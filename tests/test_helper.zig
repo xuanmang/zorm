@@ -16,8 +16,18 @@ const zorm = @import("zorm");
 /// 测试数据库连接字符串
 pub const TEST_DSN = "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres";
 
-/// 测试 Schema 名称
-pub const TEST_SCHEMA = "zorm_test";
+/// 测试 Schema 名称（基础名称，实际使用时会添加随机后缀）
+const TEST_SCHEMA_BASE = "zorm_test";
+
+/// 生成唯一的测试 Schema 名称
+fn generateTestSchemaName(allocator: std.mem.Allocator) ![]const u8 {
+    var rng = std.Random.DefaultPrng.init(@intCast(std.time.timestamp()));
+    const random_id = rng.random().int(u32);
+    return try std.fmt.allocPrint(allocator, "{s}_{x}", .{ TEST_SCHEMA_BASE, random_id });
+}
+
+/// 当前测试使用的 Schema 名称（向后兼容）
+pub const TEST_SCHEMA = TEST_SCHEMA_BASE;
 
 /// 测试超时时间 (毫秒)
 pub const TEST_TIMEOUT_MS = 30_000;
@@ -45,11 +55,15 @@ pub fn setupTestDB(allocator: std.mem.Allocator) !*zorm.DB(.postgresql) {
     driver.* = try zorm.PostgresDriver.connect(allocator, TEST_DSN);
     errdefer driver.close() catch {};
 
+    // 生成唯一的测试 schema 名称
+    const schema_name = try generateTestSchemaName(allocator);
+    errdefer allocator.free(schema_name);
+
     // 初始化测试 schema
-    try initTestSchema(driver);
+    try initTestSchema(driver, allocator, schema_name);
 
     // 创建 DB 实例 (使用适配器模式)
-    const db = try createDBFromDriver(allocator, driver);
+    const db = try createDBFromDriver(allocator, driver, schema_name);
     errdefer db.deinit();
 
     return db;
@@ -61,15 +75,22 @@ pub fn setupTestDB(allocator: std.mem.Allocator) !*zorm.DB(.postgresql) {
 pub fn cleanupTestDB(db: *zorm.DB(.postgresql)) !void {
     const allocator = db.allocator;
 
-    // 获取底层 driver
+    // 获取底层 driver 和 adapter（在 db.deinit() 之前保存）
     const adapter: *DriverConnAdapter = @ptrCast(@alignCast(db.conn.ptr));
     const driver = adapter.driver;
+    const schema_name = adapter.schema_name;
 
     // 删除测试 schema
-    try dropTestSchema(driver);
+    try dropTestSchema(driver, allocator, schema_name);
 
-    // 关闭连接
+    // 释放 schema_name
+    allocator.free(schema_name);
+
+    // 关闭并释放 DB（会调用 conn.close() 但不会释放 adapter）
     db.deinit();
+
+    // 释放 adapter（DriverConnAdapter 本身）
+    allocator.destroy(adapter);
 
     // 释放 driver 内存
     allocator.destroy(driver);
@@ -97,23 +118,27 @@ pub fn destroyTestDriver(allocator: std.mem.Allocator, driver: *zorm.PostgresDri
 /// 初始化测试 Schema
 ///
 /// 删除旧的测试 schema 并创建新的
-fn initTestSchema(driver: *zorm.PostgresDriver) !void {
+fn initTestSchema(driver: *zorm.PostgresDriver, allocator: std.mem.Allocator, schema_name: []const u8) !void {
     // 删除旧 schema (CASCADE 删除所有表和数据)
-    const drop_sql = "DROP SCHEMA IF EXISTS " ++ TEST_SCHEMA ++ " CASCADE";
+    const drop_sql = try std.fmt.allocPrint(allocator, "DROP SCHEMA IF EXISTS {s} CASCADE", .{schema_name});
+    defer allocator.free(drop_sql);
     _ = try driver.exec(drop_sql, &.{});
 
     // 创建新 schema
-    const create_sql = "CREATE SCHEMA " ++ TEST_SCHEMA;
+    const create_sql = try std.fmt.allocPrint(allocator, "CREATE SCHEMA {s}", .{schema_name});
+    defer allocator.free(create_sql);
     _ = try driver.exec(create_sql, &.{});
 
     // 设置 search_path
-    const set_path_sql = "SET search_path TO " ++ TEST_SCHEMA ++ ", public";
+    const set_path_sql = try std.fmt.allocPrint(allocator, "SET search_path TO {s}, public", .{schema_name});
+    defer allocator.free(set_path_sql);
     _ = try driver.exec(set_path_sql, &.{});
 }
 
 /// 删除测试 Schema
-fn dropTestSchema(driver: *zorm.PostgresDriver) !void {
-    const drop_sql = "DROP SCHEMA IF EXISTS " ++ TEST_SCHEMA ++ " CASCADE";
+fn dropTestSchema(driver: *zorm.PostgresDriver, allocator: std.mem.Allocator, schema_name: []const u8) !void {
+    const drop_sql = try std.fmt.allocPrint(allocator, "DROP SCHEMA IF EXISTS {s} CASCADE", .{schema_name});
+    defer allocator.free(drop_sql);
     _ = try driver.exec(drop_sql, &.{});
 }
 
@@ -234,6 +259,7 @@ pub fn execSQL(db: *zorm.DB(.postgresql), sql: []const u8) !void {
 }
 
 /// 查询单个值 (用于测试验证)
+/// 查询单个值 (用于测试验证)
 pub fn queryScalar(
     db: *zorm.DB(.postgresql),
     comptime T: type,
@@ -246,7 +272,11 @@ pub fn queryScalar(
     if (try result.rows.next()) |row| {
         return switch (T) {
             i64, i32 => try row.getInt(T, 0),
-            []const u8 => try row.getString(0),
+            []const u8 => {
+                // 字符串需要复制，因为 result.close() 会释放内存
+                const str = try row.getString(0);
+                return try db.allocator.dupe(u8, str);
+            },
             bool => try row.getBool(0),
             f64 => try row.getFloat(f64, 0),
             else => @compileError("Unsupported scalar type: " ++ @typeName(T)),
@@ -264,6 +294,7 @@ pub fn queryScalar(
 const DriverConnAdapter = struct {
     driver: *zorm.PostgresDriver,
     allocator: std.mem.Allocator,
+    schema_name: []const u8,
 
     fn exec(ptr: *anyopaque, query_str: []const u8, args: []const zorm.QueryArg) anyerror!void {
         const self: *DriverConnAdapter = @ptrCast(@alignCast(ptr));
@@ -274,12 +305,10 @@ const DriverConnAdapter = struct {
         const self: *DriverConnAdapter = @ptrCast(@alignCast(ptr));
         const rows = try self.driver.query(query_str, args);
 
-        // 创建 ResultWrapper
-        const wrapper = try self.allocator.create(ResultWrapper);
-        wrapper.* = .{ .allocator = self.allocator };
-
         // 创建 Result VTable
         const result_vtable = try self.allocator.create(zorm.core.Result.VTable);
+        errdefer self.allocator.destroy(result_vtable);
+
         result_vtable.* = .{
             .next = ResultWrapper.next,
             .scan = ResultWrapper.scan,
@@ -288,11 +317,24 @@ const DriverConnAdapter = struct {
 
         // 创建 Result 接口
         const result = try self.allocator.create(zorm.core.Result);
+        errdefer self.allocator.destroy(result);
+
+        // 创建 ResultWrapper（持有 result 和 vtable 指针以便在 close 时释放）
+        const wrapper = try self.allocator.create(ResultWrapper);
+        errdefer self.allocator.destroy(wrapper);
+
+        wrapper.* = .{
+            .allocator = self.allocator,
+            .result = result,
+            .vtable = result_vtable,
+        };
+
         result.* = .{
             .ptr = wrapper,
             .vtable = result_vtable,
             .rows = rows,
         };
+
         return result;
     }
 
@@ -316,6 +358,8 @@ const DriverConnAdapter = struct {
 
 const ResultWrapper = struct {
     allocator: std.mem.Allocator,
+    result: *zorm.core.Result, // 持有 Result 指针以便释放
+    vtable: *zorm.core.Result.VTable, // 持有 VTable 指针以便释放
 
     fn next(_: *anyopaque) anyerror!bool {
         return error.NotImplemented;
@@ -327,18 +371,30 @@ const ResultWrapper = struct {
 
     fn close(ptr: *anyopaque) void {
         const self: *ResultWrapper = @ptrCast(@alignCast(ptr));
-        self.allocator.destroy(self);
+        const allocator = self.allocator;
+        const result = self.result;
+        const vtable = self.vtable;
+
+        // 释放 wrapper 自身
+        allocator.destroy(self);
+
+        // 释放 VTable
+        allocator.destroy(vtable);
+
+        // 释放 Result
+        allocator.destroy(result);
     }
 };
 
 /// 从 Driver 创建 DB 实例
-fn createDBFromDriver(allocator: std.mem.Allocator, driver: *zorm.PostgresDriver) !*zorm.DB(.postgresql) {
+fn createDBFromDriver(allocator: std.mem.Allocator, driver: *zorm.PostgresDriver, schema_name: []const u8) !*zorm.DB(.postgresql) {
     const adapter = try allocator.create(DriverConnAdapter);
     errdefer allocator.destroy(adapter);
 
     adapter.* = .{
         .driver = driver,
         .allocator = allocator,
+        .schema_name = schema_name,
     };
 
     const conn = zorm.core.Conn{
@@ -354,6 +410,7 @@ fn createDBFromDriver(allocator: std.mem.Allocator, driver: *zorm.PostgresDriver
 // ============================================
 
 /// 测试用户模型
+/// 测试用户模型
 pub const TestUser = struct {
     id: i64,
     name: []const u8,
@@ -363,8 +420,15 @@ pub const TestUser = struct {
     updated_at: i64,
 
     pub const table_name = "test_users";
+
+    /// Schema 配置
+    pub const schema = .{
+        .id = .{ .primary_key = true, .auto_increment = true },
+        .email = .{ .unique = true },
+    };
 };
 
+/// 测试文章模型
 /// 测试文章模型
 pub const TestPost = struct {
     id: i64,
@@ -375,4 +439,9 @@ pub const TestPost = struct {
     created_at: i64,
 
     pub const table_name = "test_posts";
+
+    /// Schema 配置
+    pub const schema = .{
+        .id = .{ .primary_key = true, .auto_increment = true },
+    };
 };

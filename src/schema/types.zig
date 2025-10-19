@@ -45,75 +45,30 @@ pub const SQLType = enum {
     serial, // auto-increment integer
     bigserial, // auto-increment bigint
 
-    /// 转换为特定方言的 SQL 类型字符串
+    /// 转换为 PostgreSQL SQL 类型字符串
     pub fn toSQL(self: SQLType, comptime dialect: Dialect) []const u8 {
-        return switch (dialect) {
-            .postgresql => switch (self) {
-                .smallint => "SMALLINT",
-                .integer => "INTEGER",
-                .bigint => "BIGINT",
-                .real => "REAL",
-                .double => "DOUBLE PRECISION",
-                .boolean => "BOOLEAN",
-                .text => "TEXT",
-                .varchar => "VARCHAR",
-                .char => "CHAR",
-                .timestamp => "TIMESTAMP",
-                .timestamptz => "TIMESTAMPTZ",
-                .date => "DATE",
-                .time => "TIME",
-                .json => "JSON",
-                .jsonb => "JSONB",
-                .blob => "BYTEA",
-                .bytea => "BYTEA",
-                .uuid => "UUID",
-                .serial => "SERIAL",
-                .bigserial => "BIGSERIAL",
-            },
-            .mysql => switch (self) {
-                .smallint => "SMALLINT",
-                .integer => "INT",
-                .bigint => "BIGINT",
-                .real => "FLOAT",
-                .double => "DOUBLE",
-                .boolean => "BOOLEAN",
-                .text => "TEXT",
-                .varchar => "VARCHAR(255)",
-                .char => "CHAR",
-                .timestamp => "TIMESTAMP",
-                .timestamptz => "TIMESTAMP",
-                .date => "DATE",
-                .time => "TIME",
-                .json => "JSON",
-                .jsonb => "JSON",
-                .blob => "BLOB",
-                .bytea => "BLOB",
-                .uuid => "CHAR(36)",
-                .serial => "INT AUTO_INCREMENT",
-                .bigserial => "BIGINT AUTO_INCREMENT",
-            },
-            .sqlite => switch (self) {
-                .smallint => "INTEGER",
-                .integer => "INTEGER",
-                .bigint => "INTEGER",
-                .real => "REAL",
-                .double => "REAL",
-                .boolean => "INTEGER",
-                .text => "TEXT",
-                .varchar => "TEXT",
-                .char => "TEXT",
-                .timestamp => "INTEGER",
-                .timestamptz => "INTEGER",
-                .date => "TEXT",
-                .time => "TEXT",
-                .json => "TEXT",
-                .jsonb => "TEXT",
-                .blob => "BLOB",
-                .bytea => "BLOB",
-                .uuid => "TEXT",
-                .serial => "INTEGER",
-                .bigserial => "INTEGER",
-            },
+        _ = dialect; // PostgreSQL 专用
+        return switch (self) {
+            .smallint => "SMALLINT",
+            .integer => "INTEGER",
+            .bigint => "BIGINT",
+            .real => "REAL",
+            .double => "DOUBLE PRECISION",
+            .boolean => "BOOLEAN",
+            .text => "TEXT",
+            .varchar => "VARCHAR",
+            .char => "CHAR",
+            .timestamp => "TIMESTAMP",
+            .timestamptz => "TIMESTAMPTZ",
+            .date => "DATE",
+            .time => "TIME",
+            .json => "JSON",
+            .jsonb => "JSONB",
+            .blob => "BYTEA",
+            .bytea => "BYTEA",
+            .uuid => "UUID",
+            .serial => "SERIAL",
+            .bigserial => "BIGSERIAL",
         };
     }
 };
@@ -205,11 +160,11 @@ test "SQLType.toSQL" {
     try testing.expectEqualStrings("JSONB", SQLType.jsonb.toSQL(.postgresql));
 
     // MySQL
-    try testing.expectEqualStrings("BIGINT", SQLType.bigint.toSQL(.mysql));
-    try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.mysql));
-    try testing.expectEqualStrings("JSON", SQLType.jsonb.toSQL(.mysql));
+    try testing.expectEqualStrings("BIGINT", SQLType.bigint.toSQL(.postgresql));
+    try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.postgresql));
+    try testing.expectEqualStrings("JSON", SQLType.jsonb.toSQL(.postgresql));
 
     // SQLite
-    try testing.expectEqualStrings("INTEGER", SQLType.bigint.toSQL(.sqlite));
-    try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.sqlite));
+    try testing.expectEqualStrings("INTEGER", SQLType.bigint.toSQL(.postgresql));
+    try testing.expectEqualStrings("TEXT", SQLType.text.toSQL(.postgresql));
 }

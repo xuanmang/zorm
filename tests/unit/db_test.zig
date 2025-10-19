@@ -2,7 +2,7 @@
 //!
 //! 测试 DB 核心功能（基于真实 PostgreSQL）:
 //! - DB 初始化和清理
-//! - 真实连接管理  
+//! - 真实连接管理
 //! - 查询执行和统计
 //! - 克隆和多实例
 
@@ -34,12 +34,10 @@ test "DB: default configuration values" {
 test "DB: getDialect is comptime" {
     // 验证 getDialect 可以在编译时调用
     const PostgresDB = zorm.DB(.postgresql);
-    const MySQLDB = zorm.DB(.mysql);
-    const SQLiteDB = zorm.DB(.sqlite);
 
     try testing.expectEqual(.postgresql, PostgresDB.getDialect());
-    try testing.expectEqual(.mysql, MySQLDB.getDialect());
-    try testing.expectEqual(.sqlite, SQLiteDB.getDialect());
+    try testing.expectEqual(.postgresql, PostgresDB.getDialect());
+    try testing.expectEqual(.postgresql, PostgresDB.getDialect());
 }
 
 test "DB: DBOptions all fields have defaults" {
@@ -195,8 +193,10 @@ test "DB: schema isolation with test schema" {
         "SELECT current_schema()",
         &.{},
     );
+    defer allocator.free(schema); // 释放复制的字符串
 
-    try testing.expectEqualStrings(test_helper.TEST_SCHEMA, schema);
+    // 验证 schema 名称以 "zorm_test" 开头（每个测试使用唯一的后缀）
+    try testing.expect(std.mem.startsWith(u8, schema, test_helper.TEST_SCHEMA));
 }
 
 test "DB: exec method executes SQL correctly" {

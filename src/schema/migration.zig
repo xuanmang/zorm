@@ -152,14 +152,14 @@ pub fn MigrationManager(comptime dialect: Dialect) type {
                 \\  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 \\)
                 ,
-                .mysql =>
+                .postgresql =>
                 \\CREATE TABLE IF NOT EXISTS {s} (
                 \\  version BIGINT PRIMARY KEY,
                 \\  name VARCHAR(255) NOT NULL,
                 \\  applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 \\)
                 ,
-                .sqlite =>
+                .postgresql =>
                 \\CREATE TABLE IF NOT EXISTS {s} (
                 \\  version INTEGER PRIMARY KEY,
                 \\  name TEXT NOT NULL,
@@ -211,8 +211,8 @@ pub fn MigrationManager(comptime dialect: Dialect) type {
 
             const sql = comptime switch (dialect) {
                 .postgresql => "INSERT INTO {s} (version, name, applied_at) VALUES ($1, $2, to_timestamp($3))",
-                .mysql => "INSERT INTO {s} (version, name, applied_at) VALUES (?, ?, FROM_UNIXTIME(?))",
-                .sqlite => "INSERT INTO {s} (version, name, applied_at) VALUES (?, ?, ?)",
+                .postgresql => "INSERT INTO {s} (version, name, applied_at) VALUES (?, ?, FROM_UNIXTIME(?))",
+                .postgresql => "INSERT INTO {s} (version, name, applied_at) VALUES (?, ?, ?)",
             };
 
             const query = try std.fmt.allocPrint(
@@ -239,7 +239,7 @@ pub fn MigrationManager(comptime dialect: Dialect) type {
                 self.allocator,
                 comptime switch (dialect) {
                     .postgresql => "DELETE FROM {s} WHERE version = $1",
-                    .mysql, .sqlite => "DELETE FROM {s} WHERE version = ?",
+                    .postgresql, .postgresql => "DELETE FROM {s} WHERE version = ?",
                 },
                 .{self.migrations_table},
             );

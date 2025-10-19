@@ -185,33 +185,3 @@ test "DropTableQuery: 内存泄漏检测" {
 
     // 如果有内存泄漏,testing.allocator 会自动检测并报告
 }
-
-test "DropTableQuery: MySQL 方言" {
-    var mock_db = MockDB{ .allocator = testing.allocator };
-
-    var query = try DropTableQuery(User, .mysql).init(testing.allocator, @ptrCast(&mock_db));
-    defer query.deinit();
-
-    _ = query.ifExists().cascade();
-
-    const sql = try query.build();
-    defer testing.allocator.free(sql);
-
-    // MySQL 语法应该相同
-    try testing.expectEqualStrings("DROP TABLE IF EXISTS users CASCADE", sql);
-}
-
-test "DropTableQuery: SQLite 方言" {
-    var mock_db = MockDB{ .allocator = testing.allocator };
-
-    var query = try DropTableQuery(User, .sqlite).init(testing.allocator, @ptrCast(&mock_db));
-    defer query.deinit();
-
-    _ = query.ifExists();
-
-    const sql = try query.build();
-    defer testing.allocator.free(sql);
-
-    // SQLite 语法应该相同
-    try testing.expectEqualStrings("DROP TABLE IF EXISTS users", sql);
-}

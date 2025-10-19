@@ -66,8 +66,12 @@ pub const ScanOptions = struct {
 /// ```
 pub fn scanAll(comptime T: type, rows: anytype, allocator: Allocator, dest: anytype) !void {
     while (try rows.next()) |row_const| {
-        var row = row_const;
-        const item = try field_mapper.scanRow(T, &row, allocator);
+        // 将 driver.connection.Row 适配为 mapper.field_mapper.Row
+        var mapper_row = Row{
+            .driver_row = row_const.driver_row,
+            .vtable = @ptrCast(row_const.vtable),
+        };
+        const item = try field_mapper.scanRow(T, &mapper_row, allocator);
         try dest.append(allocator, item);
     }
 }
@@ -101,8 +105,12 @@ pub fn scanOne(comptime T: type, rows: anytype, allocator: Allocator) !T {
         return error.NoRows;
     }
 
-    var first = first_row.?;
-    const result = try field_mapper.scanRow(T, &first, allocator);
+    // 将 driver.connection.Row 适配为 mapper.field_mapper.Row
+    var mapper_row = Row{
+        .driver_row = first_row.?.driver_row,
+        .vtable = @ptrCast(first_row.?.vtable),
+    };
+    const result = try field_mapper.scanRow(T, &mapper_row, allocator);
 
     // 检查是否还有更多行
     const second = try rows.next();

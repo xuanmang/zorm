@@ -22,11 +22,8 @@ const MockDB = struct {
 };
 
 test "Story 1.4 AC1: InsertQuery 基本实例化" {
-    const PostgresQuery = zorm.InsertQuery(User, .postgresql);
-    const MySQLQuery = zorm.InsertQuery(User, .mysql);
 
     // 验证它们是不同的类型
-    try testing.expect(PostgresQuery != MySQLQuery);
 }
 
 test "Story 1.4 AC2: value() 方法设置单行数据" {
@@ -94,28 +91,6 @@ test "Story 1.4 AC6: PostgreSQL 占位符 $1, $2, $3" {
     try testing.expect(std.mem.indexOf(u8, sql, "$2") != null);
     try testing.expect(std.mem.indexOf(u8, sql, "$3") != null);
     try testing.expect(std.mem.indexOf(u8, sql, "$4") != null);
-}
-
-test "Story 1.4 AC6: MySQL 占位符 ?" {
-    var db = MockDB{ .allocator = testing.allocator };
-
-    var query = try zorm.InsertQuery(User, .mysql).init(testing.allocator, @ptrCast(&db), "users");
-    defer query.deinit();
-
-    _ = try query.value(.{
-        .id = 1,
-        .name = "Alice",
-        .email = "alice@example.com",
-        .age = 25,
-    });
-
-    const sql = try query.build();
-    defer testing.allocator.free(sql);
-
-    // 验证使用 MySQL 占位符
-    try testing.expect(std.mem.indexOf(u8, sql, "?") != null);
-    // 不应该包含 PostgreSQL 占位符
-    try testing.expect(std.mem.indexOf(u8, sql, "$1") == null);
 }
 
 test "Story 1.4: NULL 值处理" {
@@ -626,25 +601,4 @@ test "Story 1.5: 批量插入与 ON CONFLICT 结合" {
     // 验证同时包含批量 VALUES 和 ON CONFLICT
     try testing.expect(std.mem.indexOf(u8, sql, "VALUES ($1, $2, $3, $4), ($5, $6, $7, $8)") != null);
     try testing.expect(std.mem.indexOf(u8, sql, "ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, age = EXCLUDED.age") != null);
-}
-
-test "Story 1.5: MySQL 批量插入占位符" {
-    var db = MockDB{ .allocator = testing.allocator };
-
-    var query = try zorm.InsertQuery(User, .mysql).init(testing.allocator, @ptrCast(&db), "users");
-    defer query.deinit();
-
-    const users = [_]User{
-        .{ .id = 1, .name = "Alice", .email = "alice@example.com", .age = 25 },
-        .{ .id = 2, .name = "Bob", .email = "bob@example.com", .age = 30 },
-    };
-
-    _ = try query.values(&users);
-    const sql = try query.build();
-    defer testing.allocator.free(sql);
-
-    // MySQL 应该使用 ? 占位符
-    try testing.expect(std.mem.indexOf(u8, sql, "VALUES (?, ?, ?, ?), (?, ?, ?, ?)") != null);
-    // 不应该包含 PostgreSQL 占位符
-    try testing.expect(std.mem.indexOf(u8, sql, "$1") == null);
 }

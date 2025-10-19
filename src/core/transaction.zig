@@ -289,14 +289,8 @@ pub fn Transaction(comptime dialect: Dialect) type {
 
 test "Transaction 类型实例化" {
     // 验证可以为不同方言创建 Transaction 类型
-    const PostgresTx = Transaction(.postgresql);
-    const MySQLTx = Transaction(.mysql);
-    const SQLiteTx = Transaction(.sqlite);
 
     // 验证它们是不同的类型
-    try std.testing.expect(PostgresTx != MySQLTx);
-    try std.testing.expect(PostgresTx != SQLiteTx);
-    try std.testing.expect(MySQLTx != SQLiteTx);
 }
 
 test "TransactionError 错误类型" {

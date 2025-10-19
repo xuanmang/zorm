@@ -5,7 +5,7 @@
 //! - 显式内存管理,使用 Allocator 模式
 //! - comptime 泛型和零开销抽象
 //! - 类型安全的查询构建器
-//! - 多数据库方言支持 (PostgreSQL, MySQL, SQLite, MSSQL, Oracle)
+//! - PostgreSQL 专用优化
 //! - 强制错误处理
 //!
 //! 基本使用:

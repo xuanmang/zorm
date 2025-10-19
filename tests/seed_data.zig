@@ -35,23 +35,37 @@ const test_helper = @import("test_helper");
 /// - Charlie: id=3, age=28
 /// - Diana: id=4, age=35
 /// - Eve: id=5, age=22
+/// 填充测试用户数据
+///
+/// 创建 5 个标准测试用户:
+/// - Alice: id=1, age=25
+/// - Bob: id=2, age=30
+/// - Charlie: id=3, age=28
+/// - Diana: id=4, age=35
+/// - Eve: id=5, age=22
+/// 填充测试用户数据
+///
+/// 创建 5 个标准测试用户:
+/// - Alice: id=1, age=25
+/// - Bob: id=2, age=30
+/// - Charlie: id=3, age=28
+/// - Diana: id=4, age=35
+/// - Eve: id=5, age=22
 pub fn seedUsers(db: *zorm.DB(.postgresql)) !void {
     const now = std.time.timestamp();
 
+    // 不指定 id，让 BIGSERIAL 自动生成
     const sql =
-        \\INSERT INTO test_users (id, name, email, age, created_at, updated_at) VALUES
-        \\  (1, 'Alice', 'alice@example.com', 25, $1, $1),
-        \\  (2, 'Bob', 'bob@example.com', 30, $1, $1),
-        \\  (3, 'Charlie', 'charlie@example.com', 28, $1, $1),
-        \\  (4, 'Diana', 'diana@example.com', 35, $1, $1),
-        \\  (5, 'Eve', 'eve@example.com', 22, $1, $1)
+        \\INSERT INTO test_users (name, email, age, created_at, updated_at) VALUES
+        \\  ('Alice', 'alice@example.com', 25, $1, $1),
+        \\  ('Bob', 'bob@example.com', 30, $1, $1),
+        \\  ('Charlie', 'charlie@example.com', 28, $1, $1),
+        \\  ('Diana', 'diana@example.com', 35, $1, $1),
+        \\  ('Eve', 'eve@example.com', 22, $1, $1)
     ;
 
     const args = [_]zorm.QueryArg{zorm.QueryArg.fromValue(now)};
     try db.exec(sql, &args);
-
-    // 重置序列到正确的值
-    try db.exec("SELECT setval('test_users_id_seq', 5, true)", &.{});
 }
 
 /// 填充单个用户
@@ -123,28 +137,33 @@ pub fn seedManyUsers(db: *zorm.DB(.postgresql), count: usize) !void {
 /// 填充测试文章数据
 ///
 /// 为每个用户创建 2 篇文章 (总共 10 篇)
+/// 填充测试文章数据
+///
+/// 为每个用户创建 2 篇文章 (总共 10 篇)
+/// 填充测试文章数据
+///
+/// 为每个用户创建 2 篇文章 (总共 10 篇)
 pub fn seedPosts(db: *zorm.DB(.postgresql)) !void {
     const now = std.time.timestamp();
 
+    // 不指定 id，让 BIGSERIAL 自动生成
+    // 假设用户 id 为 1-5 (由 seedUsers 创建)
     const sql =
-        \\INSERT INTO test_posts (id, user_id, title, content, published, created_at) VALUES
-        \\  (1, 1, 'Alice Post 1', 'Content by Alice 1', true, $1),
-        \\  (2, 1, 'Alice Post 2', 'Content by Alice 2', false, $1),
-        \\  (3, 2, 'Bob Post 1', 'Content by Bob 1', true, $1),
-        \\  (4, 2, 'Bob Post 2', 'Content by Bob 2', true, $1),
-        \\  (5, 3, 'Charlie Post 1', 'Content by Charlie 1', false, $1),
-        \\  (6, 3, 'Charlie Post 2', 'Content by Charlie 2', true, $1),
-        \\  (7, 4, 'Diana Post 1', 'Content by Diana 1', true, $1),
-        \\  (8, 4, 'Diana Post 2', 'Content by Diana 2', false, $1),
-        \\  (9, 5, 'Eve Post 1', 'Content by Eve 1', true, $1),
-        \\  (10, 5, 'Eve Post 2', 'Content by Eve 2', true, $1)
+        \\INSERT INTO test_posts (user_id, title, content, published, created_at) VALUES
+        \\  (1, 'Alice Post 1', 'Content by Alice 1', true, $1),
+        \\  (1, 'Alice Post 2', 'Content by Alice 2', false, $1),
+        \\  (2, 'Bob Post 1', 'Content by Bob 1', true, $1),
+        \\  (2, 'Bob Post 2', 'Content by Bob 2', true, $1),
+        \\  (3, 'Charlie Post 1', 'Content by Charlie 1', false, $1),
+        \\  (3, 'Charlie Post 2', 'Content by Charlie 2', true, $1),
+        \\  (4, 'Diana Post 1', 'Content by Diana 1', true, $1),
+        \\  (4, 'Diana Post 2', 'Content by Diana 2', false, $1),
+        \\  (5, 'Eve Post 1', 'Content by Eve 1', true, $1),
+        \\  (5, 'Eve Post 2', 'Content by Eve 2', true, $1)
     ;
 
     const args = [_]zorm.QueryArg{zorm.QueryArg.fromValue(now)};
     try db.exec(sql, &args);
-
-    // 重置序列
-    try db.exec("SELECT setval('test_posts_id_seq', 10, true)", &.{});
 }
 
 /// 填充单篇文章

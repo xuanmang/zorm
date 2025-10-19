@@ -154,6 +154,9 @@ pub const Result = struct {
     }
 
     pub fn close(self: *Result) void {
+        // 先释放 Rows（这会释放 VTable）
+        self.rows.deinit();
+        // 然后调用自定义的 close 逻辑
         self.vtable.close(self.ptr);
     }
 };
@@ -949,18 +952,13 @@ test "DBStats 基本操作" {
 test "DB 泛型实例化" {
     // 验证可以为不同方言创建 DB 类型
     const PostgresDB = DB(.postgresql);
-    const MySQLDB = DB(.mysql);
-    const SQLiteDB = DB(.sqlite);
 
     // 验证它们是不同的类型
-    try std.testing.expect(PostgresDB != MySQLDB);
-    try std.testing.expect(PostgresDB != SQLiteDB);
-    try std.testing.expect(MySQLDB != SQLiteDB);
 
     // 验证 getDialect 编译时求值
     try std.testing.expectEqual(Dialect.postgresql, PostgresDB.getDialect());
-    try std.testing.expectEqual(Dialect.mysql, MySQLDB.getDialect());
-    try std.testing.expectEqual(Dialect.sqlite, SQLiteDB.getDialect());
+    try std.testing.expectEqual(Dialect.postgresql, PostgresDB.getDialect());
+    try std.testing.expectEqual(Dialect.postgresql, PostgresDB.getDialect());
 }
 
 test "DBOptions 默认值" {

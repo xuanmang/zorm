@@ -48,55 +48,26 @@ pub const ColumnType = enum {
     uuid,
     bytea,
 
-    /// 获取 SQL 类型名称
+    /// 获取 SQL 类型名称 (PostgreSQL)
     pub fn sqlType(self: ColumnType, comptime dialect: dialect_module.Dialect) []const u8 {
-        return switch (dialect) {
-            .postgresql => switch (self) {
-                .int => "INTEGER",
-                .bigint => "BIGINT",
-                .smallint => "SMALLINT",
-                .boolean => "BOOLEAN",
-                .varchar => "VARCHAR",
-                .text => "TEXT",
-                .timestamp => "TIMESTAMP",
-                .date => "DATE",
-                .time => "TIME",
-                .decimal => "DECIMAL",
-                .float => "REAL",
-                .double => "DOUBLE PRECISION",
-                .json => "JSON",
-                .jsonb => "JSONB",
-                .uuid => "UUID",
-                .bytea => "BYTEA",
-            },
-            .mysql => switch (self) {
-                .int => "INT",
-                .bigint => "BIGINT",
-                .smallint => "SMALLINT",
-                .boolean => "BOOLEAN",
-                .varchar => "VARCHAR",
-                .text => "TEXT",
-                .timestamp => "TIMESTAMP",
-                .date => "DATE",
-                .time => "TIME",
-                .decimal => "DECIMAL",
-                .float => "FLOAT",
-                .double => "DOUBLE",
-                .json => "JSON",
-                .jsonb => "JSON",
-                .uuid => "CHAR(36)",
-                .bytea => "BLOB",
-            },
-            .sqlite => switch (self) {
-                .int, .bigint, .smallint => "INTEGER",
-                .boolean => "INTEGER",
-                .varchar, .text => "TEXT",
-                .timestamp, .date, .time => "TEXT",
-                .decimal, .float, .double => "REAL",
-                .json, .jsonb => "TEXT",
-                .uuid => "TEXT",
-                .bytea => "BLOB",
-            },
+        _ = dialect; // PostgreSQL 专用
+        return switch (self) {
+            .int => "INTEGER",
+            .bigint => "BIGINT",
+            .smallint => "SMALLINT",
+            .boolean => "BOOLEAN",
+            .varchar => "VARCHAR",
+            .text => "TEXT",
+            .timestamp => "TIMESTAMP",
+            .date => "DATE",
+            .time => "TIME",
+            .decimal => "DECIMAL",
+            .float => "REAL",
+            .double => "DOUBLE PRECISION",
+            .json => "JSON",
+            .jsonb => "JSONB",
+            .uuid => "UUID",
+            .bytea => "BYTEA",
         };
     }
 };
@@ -518,22 +489,6 @@ test "ColumnType.sqlType: PostgreSQL" {
     try testing.expectEqualStrings("BOOLEAN", ColumnType.boolean.sqlType(.postgresql));
     try testing.expectEqualStrings("TEXT", ColumnType.text.sqlType(.postgresql));
     try testing.expectEqualStrings("JSONB", ColumnType.jsonb.sqlType(.postgresql));
-}
-
-test "ColumnType.sqlType: MySQL" {
-    try testing.expectEqualStrings("INT", ColumnType.int.sqlType(.mysql));
-    try testing.expectEqualStrings("BIGINT", ColumnType.bigint.sqlType(.mysql));
-    try testing.expectEqualStrings("BOOLEAN", ColumnType.boolean.sqlType(.mysql));
-    try testing.expectEqualStrings("TEXT", ColumnType.text.sqlType(.mysql));
-    try testing.expectEqualStrings("JSON", ColumnType.jsonb.sqlType(.mysql));
-}
-
-test "ColumnType.sqlType: SQLite" {
-    try testing.expectEqualStrings("INTEGER", ColumnType.int.sqlType(.sqlite));
-    try testing.expectEqualStrings("INTEGER", ColumnType.bigint.sqlType(.sqlite));
-    try testing.expectEqualStrings("INTEGER", ColumnType.boolean.sqlType(.sqlite));
-    try testing.expectEqualStrings("TEXT", ColumnType.text.sqlType(.sqlite));
-    try testing.expectEqualStrings("TEXT", ColumnType.jsonb.sqlType(.sqlite));
 }
 
 test "完整流程: 从类型到 SQL DDL" {

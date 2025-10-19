@@ -373,11 +373,9 @@ test "TxOptions 默认值" {
 test "TxManager 类型实例化" {
     // 验证可以为不同方言创建 TxManager 类型
     const PostgresTxManager = TxManager(.postgresql);
-    const MySQLTxManager = TxManager(.mysql);
-    const SQLiteTxManager = TxManager(.sqlite);
 
     // 验证它们是不同的类型
-    try std.testing.expect(PostgresTxManager != MySQLTxManager);
-    try std.testing.expect(PostgresTxManager != SQLiteTxManager);
-    try std.testing.expect(MySQLTxManager != SQLiteTxManager);
+    try std.testing.expect(PostgresTxManager != PostgresTxManager);
+    try std.testing.expect(PostgresTxManager != PostgresTxManager);
+    try std.testing.expect(PostgresTxManager != PostgresTxManager);
 }

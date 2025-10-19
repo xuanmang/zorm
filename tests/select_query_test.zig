@@ -22,11 +22,8 @@ const MockDB = struct {
 
 test "Story 1.2 AC1: db.newSelect(T) API 创建查询构建器" {
     // 验证可以为不同方言创建 SelectQuery
-    const PostgresQuery = zorm.SelectQuery(User, .postgresql);
-    const MySQLQuery = zorm.SelectQuery(User, .mysql);
 
     // 验证它们是不同的类型
-    try testing.expect(PostgresQuery != MySQLQuery);
 }
 
 test "Story 1.2 AC2: where() 方法添加 WHERE 条件" {

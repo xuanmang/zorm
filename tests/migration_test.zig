@@ -678,50 +678,6 @@ test "MigrationManager: ensureMigrationsTable PostgreSQL" {
     try testing.expect(std.mem.indexOf(u8, first_call, "schema_migrations") != null);
 }
 
-test "MigrationManager: ensureMigrationsTable MySQL" {
-    const mock_conn = try MockConn.init(testing.allocator);
-    defer mock_conn.deinit();
-
-    const DbType = @import("zorm").DB(.mysql);
-    var db = try DbType.init(
-        testing.allocator,
-        mock_conn.conn(),
-        .{},
-    );
-    defer db.deinit();
-
-    var mgr = try MigrationManager(.mysql).init(testing.allocator, db);
-    defer mgr.deinit();
-
-    _ = try mgr.up(null);
-
-    try testing.expect(mock_conn.exec_calls.items.len > 0);
-    const first_call = mock_conn.exec_calls.items[0];
-    try testing.expect(std.mem.indexOf(u8, first_call, "CREATE TABLE IF NOT EXISTS") != null);
-}
-
-test "MigrationManager: ensureMigrationsTable SQLite" {
-    const mock_conn = try MockConn.init(testing.allocator);
-    defer mock_conn.deinit();
-
-    const DbType = @import("zorm").DB(.sqlite);
-    var db = try DbType.init(
-        testing.allocator,
-        mock_conn.conn(),
-        .{},
-    );
-    defer db.deinit();
-
-    var mgr = try MigrationManager(.sqlite).init(testing.allocator, db);
-    defer mgr.deinit();
-
-    _ = try mgr.up(null);
-
-    try testing.expect(mock_conn.exec_calls.items.len > 0);
-    const first_call = mock_conn.exec_calls.items[0];
-    try testing.expect(std.mem.indexOf(u8, first_call, "CREATE TABLE IF NOT EXISTS") != null);
-}
-
 test "MigrationManager: up 基本流程验证" {
     const mock_conn = try MockConn.init(testing.allocator);
     defer mock_conn.deinit();

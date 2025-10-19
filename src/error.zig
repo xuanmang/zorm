@@ -145,13 +145,13 @@ pub const Error = error{
     // ========== 方言错误 (Dialect Errors) ==========
 
     /// 不支持的数据库方言
-    /// 触发条件: 尝试连接或操作不支持的数据库类型
-    /// 使用场景: 连接到未实现的数据库方言(如 Oracle、DB2)
+    /// 触发条件: 尝试使用非 PostgreSQL 数据库
+    /// 使用场景: ZORM 仅支持 PostgreSQL
     UnsupportedDialect,
 
     /// 不支持的特性
-    /// 触发条件: 使用当前数据库方言不支持的特性
-    /// 使用场景: 在 MySQL 5.6 上使用 JSON 类型,或在 SQLite 上使用 UPSERT
+    /// 触发条件: 使用不支持的数据库特性
+    /// 使用场景: 尝试使用超出 PostgreSQL 能力范围的功能
     UnsupportedFeature,
 
     // ========== Schema 错误 (Schema Errors) ==========

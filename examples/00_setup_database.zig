@@ -186,27 +186,6 @@ fn createTables(db: *zorm.DB(.postgresql)) !void {
 
 /// 创建用户表
 fn createUsersTable(db: *zorm.DB(.postgresql)) !void {
-    // var query = try db.newCreateTableEmpty(User);
-    // defer query.deinit();
-
-    // _ = query.ifNotExists();
-    // _ = try query.column(ID_COLUMN);
-    // _ = try query.column(.{
-    //     .name = "name",
-    //     .column_type = .text,
-    //     .nullable = false,
-    // });
-    // _ = try query.column(.{
-    //     .name = "email",
-    //     .column_type = .text,
-    //     .nullable = false,
-    //     .unique = true,
-    // });
-    // _ = try query.column(CREATED_AT_COLUMN);
-    // _ = try query.column(UPDATED_AT_COLUMN);
-
-    // try query.exec();
-
     var query = try db.newCreateTable(User);
 
     defer query.deinit();

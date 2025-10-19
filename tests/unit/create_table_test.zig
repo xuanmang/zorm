@@ -168,7 +168,7 @@ test "Table.toSQL: PostgreSQL 基本 CREATE TABLE" {
     _ = name_col.setNotNull();
     _ = try table.addColumn(name_col);
 
-    var email_col = schema_mod.Column.init("email", .text);
+    const email_col = schema_mod.Column.init("email", .text);
     // email 可空，不设置 NOT NULL
     _ = try table.addColumn(email_col);
 

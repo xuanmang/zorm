@@ -2132,6 +2132,7 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
         table_name: []const u8,
         if_exists_flag: bool = false,
         cascade_flag: bool = false,
+        restrict_flag: bool = false,
 
         /// 初始化 DROP TABLE 查询构建器
         ///
@@ -2149,6 +2150,7 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
                 .table_name = table_name,
                 .if_exists_flag = false,
                 .cascade_flag = false,
+                .restrict_flag = false,
             };
 
             return self;
@@ -2170,8 +2172,21 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
         /// 添加 CASCADE 子句
         ///
         /// 自动删除依赖此表的对象(例如外键约束)
+        /// 与 RESTRICT 互斥,如果同时调用两者,CASCADE 优先
         pub fn cascade(self: *Self) *Self {
             self.cascade_flag = true;
+            self.restrict_flag = false; // 互斥
+            return self;
+        }
+
+        /// 添加 RESTRICT 子句
+        ///
+        /// 如果有依赖对象,拒绝删除并返回错误
+        /// 这是 PostgreSQL 的默认行为,此方法主要用于显式声明
+        /// 与 CASCADE 互斥,如果同时调用两者,RESTRICT 优先
+        pub fn restrict(self: *Self) *Self {
+            self.restrict_flag = true;
+            self.cascade_flag = false; // 互斥
             return self;
         }
 
@@ -2190,6 +2205,8 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
 
             if (self.cascade_flag) {
                 try buf.appendSlice(" CASCADE");
+            } else if (self.restrict_flag) {
+                try buf.appendSlice(" RESTRICT");
             }
 
             return buf.toOwnedSlice();

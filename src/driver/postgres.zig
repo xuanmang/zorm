@@ -151,6 +151,9 @@ pub const PostgresDriver = struct {
 
             // Prepare SQL (prepare() 内部已经调用了 prepareForBind())
             stmt.prepare(sql, null) catch {
+                if (conn.err) |pg_err| {
+                    std.debug.print("[PG Error] {s}: {s}\n", .{ pg_err.code, pg_err.message });
+                }
                 return Error.QueryFailed;
             };
 
@@ -391,7 +394,9 @@ fn execWithArgs(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 {
         2 => try execWith2Args(conn, sql, args),
         3 => try execWith3Args(conn, sql, args),
         4 => try execWith4Args(conn, sql, args),
-        else => error.ParameterCountMismatch, // 超过 4 个参数暂不支持
+        5 => try execWith5Args(conn, sql, args),
+        6 => try execWith6Args(conn, sql, args),
+        else => error.ParameterCountMismatch, // 超过 6 个参数暂不支持
     };
 }
 
@@ -436,10 +441,55 @@ fn execWith3Args(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 
 }
 
 /// 辅助函数:4个参数
+/// 辅助函数:4个参数
 fn execWith4Args(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 {
-    // 测试用例使用的组合: (string, string, i64, bool)
+    // 组合 1: (string, string, int, bool) - 原有支持
     if (args[0] == .string and args[1] == .string and args[2] == .int and args[3] == .bool) {
         return try conn.exec(sql, .{ args[0].string, args[1].string, args[2].int, args[3].bool });
     }
+
+    // 组合 2: (string, string, int|null, int) - seed_data.seedUser 使用
+    if (args[0] == .string and args[1] == .string and args[3] == .int) {
+        if (args[2] == .int) {
+            // age 有值
+            return try conn.exec(sql, .{ args[0].string, args[1].string, args[2].int, args[3].int });
+        } else if (args[2] == .null_val) {
+            // age 为 NULL
+            return try conn.exec(sql, .{ args[0].string, args[1].string, null, args[3].int });
+        }
+    }
+
+    // 组合 3: (string, string, null, int) - 已在组合 2 中处理
+
+    return error.UnsupportedFeature;
+}
+
+/// 辅助函数:5个参数
+fn execWith5Args(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 {
+    // 组合 1: (string, string, int|null, int, int) - INSERT users 使用
+    if (args[0] == .string and args[1] == .string and args[3] == .int and args[4] == .int) {
+        if (args[2] == .int) {
+            // age 有值
+            return try conn.exec(sql, .{ args[0].string, args[1].string, args[2].int, args[3].int, args[4].int });
+        } else if (args[2] == .null_val) {
+            // age 为 NULL
+            return try conn.exec(sql, .{ args[0].string, args[1].string, @as(?i32, null), args[3].int, args[4].int });
+        }
+    }
+
+    return error.UnsupportedFeature;
+}
+
+/// 辅助函数:6个参数
+fn execWith6Args(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 {
+    // 组合 1: (int, string, string, int|null, int, int) - INSERT users with id
+    if (args[0] == .int and args[1] == .string and args[2] == .string and args[4] == .int and args[5] == .int) {
+        if (args[3] == .int) {
+            return try conn.exec(sql, .{ args[0].int, args[1].string, args[2].string, args[3].int, args[4].int, args[5].int });
+        } else if (args[3] == .null_val) {
+            return try conn.exec(sql, .{ args[0].int, args[1].string, args[2].string, @as(?i32, null), args[4].int, args[5].int });
+        }
+    }
+
     return error.UnsupportedFeature;
 }

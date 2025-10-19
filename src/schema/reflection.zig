@@ -10,6 +10,8 @@ const SQLType = types.SQLType;
 const table_mod = @import("table.zig");
 const Column = table_mod.Column;
 const ColumnType = table_mod.ColumnType;
+const schema_lib = @import("schema.zig");
+const getFieldSchema = schema_lib.getFieldSchema;
 
 /// 从模型类型获取表名
 ///
@@ -86,9 +88,36 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
     errdefer allocator.free(columns);
 
     inline for (fields, 0..) |field, i| {
-        const sql_type = types.zigToSQLType(field.type);
+        // 读取 schema 配置
+        const schema_cfg = comptime getFieldSchema(T, field.name);
+
         const is_optional = types.isOptional(field.type);
-        const is_primary = comptime std.mem.eql(u8, field.name, "id");
+
+        // 判断是否为主键（优先使用 schema 配置）
+        const is_primary = schema_cfg.primary_key or comptime std.mem.eql(u8, field.name, "id");
+
+        // 判断是否自增 (默认: 整数主键字段自动启用自增)
+        const is_auto_increment = schema_cfg.auto_increment or
+            (is_primary and !is_optional and types.isIntegerType(field.type));
+
+        // 获取 SQL 类型（考虑 auto_increment）
+        var sql_type: types.SQLType = undefined;
+        if (is_auto_increment) {
+            // 自增字段使用 SERIAL/BIGSERIAL
+            const field_type_info = @typeInfo(field.type);
+            const base_type = if (field_type_info == .optional)
+                field_type_info.optional.child
+            else
+                field.type;
+            const type_info = @typeInfo(base_type);
+            if (type_info == .int) {
+                sql_type = if (type_info.int.bits == 64) .bigserial else .serial;
+            } else {
+                sql_type = types.zigToSQLType(field.type);
+            }
+        } else {
+            sql_type = types.zigToSQLType(field.type);
+        }
 
         // 映射 SQLType 到 ColumnType
         const col_type: ColumnType = switch (sql_type) {
@@ -100,9 +129,9 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
             .boolean => .boolean,
             .text => .text,
             .varchar => .varchar,
-            .char => .varchar, // char 映射到 varchar
+            .char => .varchar,
             .timestamp => .timestamp,
-            .timestamptz => .timestamp, // timestamptz 映射到 timestamp
+            .timestamptz => .timestamp,
             .date => .date,
             .time => .time,
             .json => .json,
@@ -110,8 +139,8 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
             .blob => .bytea,
             .bytea => .bytea,
             .uuid => .uuid,
-            .serial => .int, // serial 映射到 int (自增在其他地方处理)
-            .bigserial => .bigint, // bigserial 映射到 bigint
+            .serial => .int, // SERIAL 映射为 INT
+            .bigserial => .bigint, // BIGSERIAL 映射为 BIGINT
         };
 
         columns[i] = .{
@@ -119,9 +148,10 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
             .column_type = col_type,
             .nullable = is_optional,
             .primary_key = is_primary,
-            .unique = false,
-            .default_value = null,
-            .check_expr = null,
+            .auto_increment = is_auto_increment,
+            .unique = schema_cfg.unique,
+            .default_value = schema_cfg.default,
+            .check_expr = schema_cfg.check,
             .foreign_key = null,
         };
     }

@@ -365,8 +365,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // 执行查询
             var result = try self.db.query(query_str, all_args.items);
-            defer result.close();
-            defer result.rows.deinit();
+            defer result.close(); // close 会自动调用 rows.deinit()
 
             // 使用 result_scanner 扫描单行
             return result_scanner.scanOne(T, &result.rows, self.allocator);
@@ -451,8 +450,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // 执行查询
             var result = try self.db.query(query_str, all_args.items);
-            defer result.close();
-            defer result.rows.deinit();
+            defer result.close(); // close 会自动调用 rows.deinit()
 
             // 获取第一行
             const first_row = try result.rows.next();
@@ -497,8 +495,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // 执行查询
             var result = try self.db.query(query_str, all_args.items);
-            defer result.close();
-            defer result.rows.deinit();
+            defer result.close(); // close 会自动调用 rows.deinit()
 
             // 使用 ArrayList 收集结果
             var results = std.ArrayList(T){};
@@ -571,6 +568,17 @@ fn replacePlaceholders(allocator: Allocator, sql: []const u8, start_index: usize
     while (i < sql.len) : (i += 1) {
         if (sql[i] == '?') {
             // 替换 ? 为 $N
+            const placeholder = try std.fmt.allocPrint(allocator, "${d}", .{current_index});
+            defer allocator.free(placeholder);
+            try result.appendSlice(allocator, placeholder);
+            current_index += 1;
+        } else if (sql[i] == '$' and i + 1 < sql.len and std.ascii.isDigit(sql[i + 1])) {
+            // 替换 $数字 为 $current_index
+            // 跳过 $ 和后面的数字
+            i += 1;
+            while (i < sql.len and std.ascii.isDigit(sql[i])) : (i += 1) {}
+            i -= 1; // while 循环会再 +1,所以这里 -1
+
             const placeholder = try std.fmt.allocPrint(allocator, "${d}", .{current_index});
             defer allocator.free(placeholder);
             try result.appendSlice(allocator, placeholder);
@@ -3484,7 +3492,7 @@ test "CreateTableQuery: 基本 CREATE TABLE" {
 
     // 验证 SQL 包含关键部分
     try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "name VARCHAR NOT NULL") != null);
 }
 

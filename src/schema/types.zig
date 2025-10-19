@@ -159,6 +159,18 @@ pub fn isOptional(comptime T: type) bool {
     return @typeInfo(T) == .optional;
 }
 
+/// 检查类型是否为整数类型 (i8, i16, i32, i64, u8, u16, u32, u64 等)
+///
+/// 支持可选类型,会自动解包检查基础类型
+pub fn isIntegerType(comptime T: type) bool {
+    const base_type = if (@typeInfo(T) == .optional)
+        @typeInfo(T).optional.child
+    else
+        T;
+
+    return @typeInfo(base_type) == .int;
+}
+
 /// 获取可选类型的子类型
 pub fn optionalChild(comptime T: type) type {
     const type_info = @typeInfo(T);

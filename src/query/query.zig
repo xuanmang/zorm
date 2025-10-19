@@ -2422,6 +2422,210 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
     };
 }
 
+// ========== Raw SQL Query ==========
+
+/// Raw SQL 查询构建器
+///
+/// 提供执行任意 SQL 语句的能力，用于处理查询构建器无法覆盖的复杂场景。
+///
+/// ## 使用场景
+/// - 窗口函数 (RANK, ROW_NUMBER, PARTITION BY)
+/// - CTE (Common Table Expression)
+/// - 全文搜索 (to_tsvector, to_tsquery)
+/// - JSON/JSONB 操作
+/// - 复杂聚合和统计查询
+/// - 数据库特定功能
+///
+/// ## 安全警告
+/// ⚠️ Raw SQL 需要手动防止 SQL 注入！
+/// ✅ 始终使用参数绑定 ($1, $2, ...)
+/// ❌ 永远不要拼接用户输入到 SQL 字符串
+///
+/// ## 参数绑定
+/// PostgreSQL 使用 $1, $2, ... 作为占位符
+///
+/// ## 示例
+/// ```zig
+/// // 窗口函数查询
+/// const sql =
+///     \\SELECT
+///     \\  u.id,
+///     \\  u.name,
+///     \\  COUNT(p.id) as post_count,
+///     \\  RANK() OVER (ORDER BY COUNT(p.id) DESC) as rank
+///     \\FROM users u
+///     \\LEFT JOIN posts p ON p.user_id = u.id
+///     \\GROUP BY u.id, u.name
+///     \\HAVING COUNT(p.id) > $1
+///     \\ORDER BY rank
+/// ;
+///
+/// var query = try db.newRaw(sql, .{5});
+/// defer query.deinit();
+///
+/// var results: std.ArrayList(UserWithRank) = .{};
+/// defer results.deinit(allocator);
+///
+/// try query.scan(UserWithRank, &results);
+/// ```
+pub fn RawQuery(comptime dialect: Dialect) type {
+    const DBType = db_mod.DB(dialect);
+    const RawResult = types.RawResult;
+
+    return struct {
+        const Self = @This();
+
+        allocator: Allocator,
+        db: *DBType,
+        sql: []const u8,
+        args: []const QueryArg,
+
+        /// 初始化 Raw SQL 查询
+        ///
+        /// ## 参数
+        /// - allocator: 内存分配器
+        /// - db: 数据库实例
+        /// - sql: SQL 语句（包含 $1, $2, ... 占位符）
+        /// - args: 参数元组
+        ///
+        /// ## 返回值
+        /// RawQuery 实例
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        pub fn init(allocator: Allocator, db: *DBType, sql: []const u8, args: anytype) !*Self {
+            const self = try allocator.create(Self);
+            errdefer allocator.destroy(self);
+
+            // 将参数元组转换为 QueryArg 数组
+            const args_array = try allocArgs(allocator, args);
+
+            self.* = .{
+                .allocator = allocator,
+                .db = db,
+                .sql = sql,
+                .args = args_array,
+            };
+
+            return self;
+        }
+
+        /// 释放资源
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.args);
+            self.allocator.destroy(self);
+        }
+
+        /// 执行 SQL 语句（不返回结果集）
+        ///
+        /// 适用于 INSERT/UPDATE/DELETE/DDL 等操作。
+        ///
+        /// ## 返回值
+        /// RawResult 包含受影响的行数
+        ///
+        /// ## 错误
+        /// - error.QueryFailed: SQL 执行失败
+        /// - error.ConnectionClosed: 数据库连接已关闭
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const sql = "UPDATE users SET is_active = $1 WHERE created_at < $2";
+        /// var query = try db.newRaw(sql, .{ false, timestamp });
+        /// defer query.deinit();
+        ///
+        /// const result = try query.exec();
+        /// std.debug.print("Updated {} rows\n", .{result.rows_affected});
+        /// ```
+        pub fn exec(self: *Self) !RawResult {
+            const rows = try self.db.driver.query(self.sql, self.args);
+            defer rows.deinit();
+
+            return RawResult{
+                .rows_affected = rows.rows_affected,
+            };
+        }
+
+        /// 执行查询并扫描结果到 ArrayList
+        ///
+        /// ## 参数
+        /// - T: 目标结构体类型
+        /// - dest: 结果 ArrayList 指针
+        ///
+        /// ## 错误
+        /// - error.QueryFailed: 查询执行失败
+        /// - error.TypeMismatch: 结果类型与目标类型不匹配
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const UserStats = struct {
+        ///     name: []const u8,
+        ///     post_count: i64,
+        /// };
+        ///
+        /// const sql =
+        ///     \\SELECT u.name, COUNT(p.id) as post_count
+        ///     \\FROM users u
+        ///     \\LEFT JOIN posts p ON p.user_id = u.id
+        ///     \\GROUP BY u.name
+        ///     \\HAVING COUNT(p.id) > $1
+        /// ;
+        ///
+        /// var results: std.ArrayList(UserStats) = .{};
+        /// defer results.deinit(allocator);
+        ///
+        /// var query = try db.newRaw(sql, .{5});
+        /// defer query.deinit();
+        ///
+        /// try query.scan(UserStats, &results);
+        /// ```
+        pub fn scan(self: *Self, comptime T: type, dest: *std.ArrayList(T)) !void {
+            const rows = try self.db.driver.query(self.sql, self.args);
+            defer rows.deinit();
+
+            try result_scanner.scanRows(T, rows, dest, self.allocator);
+        }
+
+        /// 执行查询并返回单行结果
+        ///
+        /// ## 参数
+        /// - T: 目标结构体类型
+        ///
+        /// ## 返回值
+        /// 单行结果
+        ///
+        /// ## 错误
+        /// - error.NoRows: 查询无结果
+        /// - error.MultipleRows: 查询返回多行（期望单行）
+        /// - error.QueryFailed: 查询执行失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const User = struct {
+        ///     id: i64,
+        ///     name: []const u8,
+        ///     email: []const u8,
+        /// };
+        ///
+        /// const sql = "SELECT id, name, email FROM users WHERE id = $1";
+        /// var query = try db.newRaw(sql, .{42});
+        /// defer query.deinit();
+        ///
+        /// const user = try query.scanOne(User);
+        /// ```
+        pub fn scanOne(self: *Self, comptime T: type) !T {
+            var list: std.ArrayList(T) = .{};
+            defer list.deinit(self.allocator);
+
+            try self.scan(T, &list);
+
+            if (list.items.len == 0) return Error.NoRows;
+            if (list.items.len > 1) return Error.MultipleRows;
+
+            return list.items[0];
+        }
+    };
+}
+
 // ============================================
 // 单元测试
 // ============================================

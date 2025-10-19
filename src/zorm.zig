@@ -129,6 +129,9 @@ pub const UpdateResult = @import("types.zig").UpdateResult; // Story 2.1
 pub const DeleteResult = @import("types.zig").DeleteResult; // Story 2.3
 pub const DeleteQuery = query.DeleteQuery;
 pub const CreateTableQuery = query.CreateTableQuery;
+// Story 2.6: Raw SQL Query Support
+pub const RawQuery = query.RawQuery;
+pub const RawResult = @import("types.zig").RawResult;
 
 // 导出 Mapper 类型和函数
 pub const ScanOptions = mapper.result_scanner.ScanOptions;

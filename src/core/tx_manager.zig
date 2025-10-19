@@ -305,6 +305,56 @@ pub fn TxManager(comptime dialect: Dialect) type {
 
             return DeleteQuery(T, dialect).init(self.allocator, self.db, table_name);
         }
+
+        // ========== Raw SQL Query ==========
+
+        /// 在事务中创建 Raw SQL 查询
+        ///
+        /// 提供在事务上下文中执行任意 SQL 语句的能力。
+        ///
+        /// ## 使用场景
+        /// - 事务中的复杂查询 (窗口函数、CTE 等)
+        /// - 数据库特定功能
+        /// - 需要在事务中执行的 Raw SQL
+        ///
+        /// ## 安全警告
+        /// ⚠️ Raw SQL 需要手动防止 SQL 注入！
+        /// ✅ 始终使用参数绑定 ($1, $2, ...)
+        /// ❌ 永远不要拼接用户输入到 SQL 字符串
+        ///
+        /// ## 参数
+        /// - sql: SQL 语句（包含 $1, $2, ... 占位符）
+        /// - args: 参数元组
+        ///
+        /// ## 返回值
+        /// RawQuery 实例，调用者负责调用 deinit() 释放资源
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        /// - error.TransactionNotActive: 事务未激活
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var tx = try db.beginTx(.{});
+        /// defer tx.deinit();
+        /// errdefer tx.rollback() catch {};
+        ///
+        /// const sql =
+        ///     \\UPDATE users
+        ///     \\SET balance = balance + $1
+        ///     \\WHERE id = $2
+        /// ;
+        ///
+        /// var query = try tx.newRaw(sql, .{ 100.50, user_id });
+        /// defer query.deinit();
+        ///
+        /// const result = try query.exec();
+        /// try tx.commit();
+        /// ```
+        pub fn newRaw(self: *Self, sql: []const u8, args: anytype) !*query_mod.RawQuery(dialect) {
+            const QueryType = query_mod.RawQuery(dialect);
+            return try QueryType.init(self.allocator, self.db, sql, args);
+        }
     };
 }
 

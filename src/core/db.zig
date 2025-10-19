@@ -843,6 +843,63 @@ pub fn DB(comptime dialect: Dialect) type {
         pub fn newDropIndex(self: *Self, comptime T: type, index_name: []const u8) !*DropIndexQuery(T, dialect) {
             return DropIndexQuery(T, dialect).init(self.allocator, self, index_name);
         }
+
+        // ========== Raw SQL Query ==========
+
+        /// 创建 Raw SQL 查询
+        ///
+        /// 提供执行任意 SQL 语句的能力，用于处理查询构建器无法覆盖的复杂场景。
+        ///
+        /// ## 使用场景
+        /// - 窗口函数 (RANK, ROW_NUMBER, PARTITION BY)
+        /// - CTE (Common Table Expression)
+        /// - 全文搜索 (to_tsvector, to_tsquery)
+        /// - JSON/JSONB 操作
+        /// - 复杂聚合和统计查询
+        /// - 数据库特定功能
+        ///
+        /// ## 安全警告
+        /// ⚠️ Raw SQL 需要手动防止 SQL 注入！
+        /// ✅ 始终使用参数绑定 ($1, $2, ...)
+        /// ❌ 永远不要拼接用户输入到 SQL 字符串
+        ///
+        /// ## 参数
+        /// - sql: SQL 语句（包含 $1, $2, ... 占位符）
+        /// - args: 参数元组
+        ///
+        /// ## 返回值
+        /// RawQuery 实例，调用者负责调用 deinit() 释放资源
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 窗口函数查询
+        /// const sql =
+        ///     \\SELECT
+        ///     \\  u.id,
+        ///     \\  u.name,
+        ///     \\  COUNT(p.id) as post_count,
+        ///     \\  RANK() OVER (ORDER BY COUNT(p.id) DESC) as rank
+        ///     \\FROM users u
+        ///     \\LEFT JOIN posts p ON p.user_id = u.id
+        ///     \\GROUP BY u.id, u.name
+        ///     \\HAVING COUNT(p.id) > $1
+        /// ;
+        ///
+        /// var query = try db.newRaw(sql, .{5});
+        /// defer query.deinit();
+        ///
+        /// var results: std.ArrayList(UserWithRank) = .{};
+        /// defer results.deinit(allocator);
+        ///
+        /// try query.scan(UserWithRank, &results);
+        /// ```
+        pub fn newRaw(self: *Self, sql: []const u8, args: anytype) !*query_mod.RawQuery(dialect) {
+            const QueryType = query_mod.RawQuery(dialect);
+            return try QueryType.init(self.allocator, self, sql, args);
+        }
     };
 }
 

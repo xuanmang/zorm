@@ -755,6 +755,33 @@ pub const UpdateResult = struct {
     rows_affected: usize,
 };
 
+/// Raw SQL 查询结果
+///
+/// 用于 Raw SQL 执行的结果，包含受影响的行数。
+/// 适用于 INSERT/UPDATE/DELETE/DDL 等不返回结果集的操作。
+///
+/// ## 使用场景
+/// - 执行 Raw INSERT/UPDATE/DELETE 语句
+/// - 执行 DDL 语句 (CREATE TABLE, DROP TABLE, etc.)
+/// - 执行数据库管理命令
+///
+/// ## 示例
+/// ```zig
+/// const sql = "UPDATE users SET is_active = $1 WHERE created_at < $2";
+/// var query = try db.newRaw(sql, .{ false, timestamp });
+/// defer query.deinit();
+///
+/// const result = try query.exec();
+/// std.debug.print("Updated {} rows\n", .{result.rows_affected});
+/// ```
+pub const RawResult = struct {
+    /// 受影响的行数
+    ///
+    /// 对于 INSERT/UPDATE/DELETE 语句，表示被修改的行数。
+    /// 对于 DDL 语句 (CREATE TABLE 等)，通常为 0。
+    rows_affected: usize,
+};
+
 /// DELETE 查询执行结果
 ///
 /// 包含删除操作影响的行数

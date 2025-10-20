@@ -84,13 +84,13 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             self.* = .{
                 .allocator = allocator,
                 .db = db,
-                .columns = .{},
+                .columns = std.ArrayList([]const u8){},
                 .table_name = table_name,
-                .where_clauses = .{},
-                .join_clauses = .{},
-                .order_by_clauses = .{},
-                .group_by_columns = .{},
-                .having_clauses = .{},
+                .where_clauses = std.ArrayList(WhereClause){},
+                .join_clauses = std.ArrayList(JoinClause){},
+                .order_by_clauses = std.ArrayList(OrderByClause){},
+                .group_by_columns = std.ArrayList([]const u8){},
+                .having_clauses = std.ArrayList(HavingClause){},
                 .limit_value = null,
                 .offset_value = null,
                 .distinct_value = false,
@@ -300,96 +300,96 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ```
         pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             const allocator = alloc orelse self.allocator;
-            var buf = std.ArrayList(u8).init(allocator);
-            errdefer buf.deinit();
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(allocator);
 
             // SELECT [DISTINCT]
-            try buf.appendSlice("SELECT ");
+            try buf.appendSlice(allocator, "SELECT ");
             if (self.distinct_value) {
-                try buf.appendSlice("DISTINCT ");
+                try buf.appendSlice(allocator, "DISTINCT ");
             }
 
             // 列
             if (self.columns.items.len > 0) {
                 for (self.columns.items, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(col);
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
                 }
             } else {
-                try buf.appendSlice("*");
+                try buf.appendSlice(allocator, "*");
             }
 
             // FROM
-            try buf.appendSlice(" FROM ");
-            try buf.appendSlice(self.table_name);
+            try buf.appendSlice(allocator, " FROM ");
+            try buf.appendSlice(allocator, self.table_name);
 
             // JOINs
             for (self.join_clauses.items) |join_clause| {
-                try buf.appendSlice(" ");
-                try buf.appendSlice(join_clause.join_type.toSQL());
-                try buf.appendSlice(" ");
-                try buf.appendSlice(join_clause.table);
+                try buf.appendSlice(allocator, " ");
+                try buf.appendSlice(allocator, join_clause.join_type.toSQL());
+                try buf.appendSlice(allocator, " ");
+                try buf.appendSlice(allocator, join_clause.table);
 
                 // CROSS JOIN 不需要 ON 条件
                 if (join_clause.join_type != .cross) {
-                    try buf.appendSlice(" ON ");
-                    try buf.appendSlice(join_clause.condition);
+                    try buf.appendSlice(allocator, " ON ");
+                    try buf.appendSlice(allocator, join_clause.condition);
                 }
             }
 
             // WHERE
             if (self.where_clauses.items.len > 0) {
-                try buf.appendSlice(" WHERE ");
+                try buf.appendSlice(allocator, " WHERE ");
                 for (self.where_clauses.items, 0..) |clause, i| {
                     if (i > 0) {
-                        try buf.appendSlice(" ");
-                        try buf.appendSlice(clause.operator.toSQL());
-                        try buf.appendSlice(" ");
+                        try buf.appendSlice(allocator, " ");
+                        try buf.appendSlice(allocator, clause.operator.toSQL());
+                        try buf.appendSlice(allocator, " ");
                     }
-                    try buf.appendSlice(clause.condition);
+                    try buf.appendSlice(allocator, clause.condition);
                 }
             }
 
             // GROUP BY
             if (self.group_by_columns.items.len > 0) {
-                try buf.appendSlice(" GROUP BY ");
+                try buf.appendSlice(allocator, " GROUP BY ");
                 for (self.group_by_columns.items, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(col);
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
                 }
             }
 
             // HAVING
             if (self.having_clauses.items.len > 0) {
-                try buf.appendSlice(" HAVING ");
+                try buf.appendSlice(allocator, " HAVING ");
                 for (self.having_clauses.items, 0..) |clause, i| {
-                    if (i > 0) try buf.appendSlice(" AND ");
-                    try buf.appendSlice(clause.condition);
+                    if (i > 0) try buf.appendSlice(allocator, " AND ");
+                    try buf.appendSlice(allocator, clause.condition);
                 }
             }
 
             // ORDER BY
             if (self.order_by_clauses.items.len > 0) {
-                try buf.appendSlice(" ORDER BY ");
+                try buf.appendSlice(allocator, " ORDER BY ");
                 for (self.order_by_clauses.items, 0..) |order_clause, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(order_clause.column);
-                    try buf.appendSlice(" ");
-                    try buf.appendSlice(order_clause.direction.toSQL());
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, order_clause.column);
+                    try buf.appendSlice(allocator, " ");
+                    try buf.appendSlice(allocator, order_clause.direction.toSQL());
                 }
             }
 
             // LIMIT
             if (self.limit_value) |limit_val| {
-                try std.fmt.format(buf.writer(), " LIMIT {d}", .{limit_val});
+                try std.fmt.format(buf.writer(allocator), " LIMIT {d}", .{limit_val});
             }
 
             // OFFSET
             if (self.offset_value) |offset_val| {
-                try std.fmt.format(buf.writer(), " OFFSET {d}", .{offset_val});
+                try std.fmt.format(buf.writer(allocator), " OFFSET {d}", .{offset_val});
             }
 
-            return buf.toOwnedSlice();
+            return buf.toOwnedSlice(allocator);
         }
 
         /// 构建 SQL 查询字符串（使用默认 allocator）
@@ -945,63 +945,63 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // AC1.5.2: 内存优化 - 预估并预分配 SQL 缓冲区
             const estimated_size = self.estimateSQLSize();
-            var buf = std.ArrayList(u8).init(allocator);
-            errdefer buf.deinit();
-            try buf.ensureTotalCapacity(estimated_size);
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(allocator);
+            try buf.ensureTotalCapacity(allocator, estimated_size);
 
             // INSERT INTO table (columns)
-            try buf.appendSlice("INSERT INTO ");
-            try buf.appendSlice(self.table_name);
-            try buf.appendSlice(" (");
+            try buf.appendSlice(allocator, "INSERT INTO ");
+            try buf.appendSlice(allocator, self.table_name);
+            try buf.appendSlice(allocator, " (");
 
             for (self.columns.items, 0..) |col, i| {
-                if (i > 0) try buf.appendSlice(", ");
-                try buf.appendSlice(col);
+                if (i > 0) try buf.appendSlice(allocator, ", ");
+                try buf.appendSlice(allocator, col);
             }
 
-            try buf.appendSlice(") VALUES ");
+            try buf.appendSlice(allocator, ") VALUES ");
 
             // AC1.5.2: 多行 VALUES (...), (...), (...)
             var param_index: usize = 1;
             for (self.values_list.items, 0..) |_, row_idx| {
-                if (row_idx > 0) try buf.appendSlice(", ");
-                try buf.appendSlice("(");
+                if (row_idx > 0) try buf.appendSlice(allocator, ", ");
+                try buf.appendSlice(allocator, "(");
 
                 for (self.columns.items, 0..) |_, col_idx| {
-                    if (col_idx > 0) try buf.appendSlice(", ");
+                    if (col_idx > 0) try buf.appendSlice(allocator, ", ");
 
                     // 生成 PostgreSQL 占位符 $N
-                    try std.fmt.format(buf.writer(), "${d}", .{param_index});
+                    try std.fmt.format(buf.writer(allocator), "${d}", .{param_index});
                     param_index += 1;
                 }
 
-                try buf.appendSlice(")");
+                try buf.appendSlice(allocator, ")");
             }
 
             // ON CONFLICT (PostgreSQL/SQLite)
             if (self.on_conflict) |conflict| {
-                try buf.appendSlice(" ON CONFLICT");
+                try buf.appendSlice(allocator, " ON CONFLICT");
 
                 if (conflict.columns) |cols| {
-                    try buf.appendSlice(" (");
+                    try buf.appendSlice(allocator, " (");
                     for (cols, 0..) |col, i| {
-                        if (i > 0) try buf.appendSlice(", ");
-                        try buf.appendSlice(col);
+                        if (i > 0) try buf.appendSlice(allocator, ", ");
+                        try buf.appendSlice(allocator, col);
                     }
-                    try buf.appendSlice(")");
+                    try buf.appendSlice(allocator, ")");
                 }
 
-                try buf.appendSlice(" ");
-                try buf.appendSlice(conflict.action.toSQL());
+                try buf.appendSlice(allocator, " ");
+                try buf.appendSlice(allocator, conflict.action.toSQL());
 
                 if (conflict.action == .do_update) {
                     if (conflict.update_columns) |update_cols| {
-                        try buf.appendSlice(" SET ");
+                        try buf.appendSlice(allocator, " SET ");
                         for (update_cols, 0..) |col, i| {
-                            if (i > 0) try buf.appendSlice(", ");
-                            try buf.appendSlice(col);
-                            try buf.appendSlice(" = EXCLUDED.");
-                            try buf.appendSlice(col);
+                            if (i > 0) try buf.appendSlice(allocator, ", ");
+                            try buf.appendSlice(allocator, col);
+                            try buf.appendSlice(allocator, " = EXCLUDED.");
+                            try buf.appendSlice(allocator, col);
                         }
                     }
                 }
@@ -1009,26 +1009,26 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // ON DUPLICATE KEY UPDATE (MySQL)
             if (self.on_duplicate_key) |dup_key| {
-                try buf.appendSlice(" ON DUPLICATE KEY UPDATE ");
+                try buf.appendSlice(allocator, " ON DUPLICATE KEY UPDATE ");
                 for (dup_key.columns, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(col);
-                    try buf.appendSlice(" = VALUES(");
-                    try buf.appendSlice(col);
-                    try buf.appendSlice(")");
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
+                    try buf.appendSlice(allocator, " = VALUES(");
+                    try buf.appendSlice(allocator, col);
+                    try buf.appendSlice(allocator, ")");
                 }
             }
 
             // AC1.5.3: RETURNING 子句支持批量返回
             if (self.returning_columns) |ret_cols| {
-                try buf.appendSlice(" RETURNING ");
+                try buf.appendSlice(allocator, " RETURNING ");
                 for (ret_cols, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(col);
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
                 }
             }
 
-            return buf.toOwnedSlice();
+            return buf.toOwnedSlice(allocator);
         }
 
         /// 执行插入查询
@@ -1461,21 +1461,21 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             const allocator = alloc orelse self.allocator;
-            var buf = std.ArrayList(u8).init(allocator);
-            errdefer buf.deinit();
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(allocator);
 
             // UPDATE table
-            try buf.appendSlice("UPDATE ");
-            try buf.appendSlice(self.table_name);
+            try buf.appendSlice(allocator, "UPDATE ");
+            try buf.appendSlice(allocator, self.table_name);
 
             // SET column = value
-            try buf.appendSlice(" SET ");
+            try buf.appendSlice(allocator, " SET ");
 
             // 计算 SET 子句的参数数量（用于占位符编号）
             var param_index: usize = 1;
 
             for (self.set_clauses.items, 0..) |set_clause, i| {
-                if (i > 0) try buf.appendSlice(", ");
+                if (i > 0) try buf.appendSlice(allocator, ", ");
 
                 // 替换 SET 子句中的占位符 (? -> $N)
                 const replaced_assignment = try replacePlaceholders(
@@ -1485,7 +1485,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
                     dialect,
                 );
                 defer allocator.free(replaced_assignment);
-                try buf.appendSlice(replaced_assignment);
+                try buf.appendSlice(allocator, replaced_assignment);
 
                 // 根据实际参数数量增加索引
                 param_index += set_clause.args.len;
@@ -1493,12 +1493,12 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // WHERE
             if (self.where_clauses.items.len > 0) {
-                try buf.appendSlice(" WHERE ");
+                try buf.appendSlice(allocator, " WHERE ");
                 for (self.where_clauses.items, 0..) |clause, i| {
                     if (i > 0) {
-                        try buf.appendSlice(" ");
-                        try buf.appendSlice(clause.operator.toSQL());
-                        try buf.appendSlice(" ");
+                        try buf.appendSlice(allocator, " ");
+                        try buf.appendSlice(allocator, clause.operator.toSQL());
+                        try buf.appendSlice(allocator, " ");
                     }
 
                     // 替换 WHERE 子句中的占位符 (? -> $N)
@@ -1509,7 +1509,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
                         dialect,
                     );
                     defer allocator.free(replaced_condition);
-                    try buf.appendSlice(replaced_condition);
+                    try buf.appendSlice(allocator, replaced_condition);
 
                     // 根据实际参数数量增加索引
                     param_index += clause.args.len;
@@ -1518,14 +1518,14 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // RETURNING (PostgreSQL/SQLite)
             if (self.returning_columns) |ret_cols| {
-                try buf.appendSlice(" RETURNING ");
+                try buf.appendSlice(allocator, " RETURNING ");
                 for (ret_cols, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(col);
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
                 }
             }
 
-            return buf.toOwnedSlice();
+            return buf.toOwnedSlice(allocator);
         }
 
         /// 执行更新查询，返回受影响的行数
@@ -1896,22 +1896,22 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             const allocator = alloc orelse self.allocator;
-            var buf = std.ArrayList(u8).init(allocator);
-            errdefer buf.deinit();
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(allocator);
 
             // DELETE FROM table
-            try buf.appendSlice("DELETE FROM ");
-            try buf.appendSlice(self.table_name);
+            try buf.appendSlice(allocator, "DELETE FROM ");
+            try buf.appendSlice(allocator, self.table_name);
 
             // WHERE
-            try buf.appendSlice(" WHERE ");
+            try buf.appendSlice(allocator, " WHERE ");
             var param_index: usize = 1;
 
             for (self.where_clauses.items, 0..) |clause, i| {
                 if (i > 0) {
-                    try buf.appendSlice(" ");
-                    try buf.appendSlice(clause.operator.toSQL());
-                    try buf.appendSlice(" ");
+                    try buf.appendSlice(allocator, " ");
+                    try buf.appendSlice(allocator, clause.operator.toSQL());
+                    try buf.appendSlice(allocator, " ");
                 }
 
                 // 替换 WHERE 子句中的占位符 (? -> $N)
@@ -1922,7 +1922,7 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
                     dialect,
                 );
                 defer allocator.free(replaced_condition);
-                try buf.appendSlice(replaced_condition);
+                try buf.appendSlice(allocator, replaced_condition);
 
                 // 根据实际参数数量增加索引
                 param_index += clause.args.len;
@@ -1930,14 +1930,14 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // RETURNING (PostgreSQL/SQLite)
             if (self.returning_columns) |ret_cols| {
-                try buf.appendSlice(" RETURNING ");
+                try buf.appendSlice(allocator, " RETURNING ");
                 for (ret_cols, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(", ");
-                    try buf.appendSlice(col);
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
                 }
             }
 
-            return buf.toOwnedSlice();
+            return buf.toOwnedSlice(allocator);
         }
 
         /// 执行删除查询，返回受影响的行数
@@ -2291,24 +2291,24 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 构建 DROP TABLE SQL 语句
         pub fn build(self: *Self) ![]const u8 {
-            var buf = std.ArrayList(u8).init(self.allocator);
-            errdefer buf.deinit();
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
 
-            try buf.appendSlice("DROP TABLE ");
+            try buf.appendSlice(self.allocator, "DROP TABLE ");
 
             if (self.if_exists_flag) {
-                try buf.appendSlice("IF EXISTS ");
+                try buf.appendSlice(self.allocator, "IF EXISTS ");
             }
 
-            try buf.appendSlice(self.table_name);
+            try buf.appendSlice(self.allocator, self.table_name);
 
             if (self.cascade_flag) {
-                try buf.appendSlice(" CASCADE");
+                try buf.appendSlice(self.allocator, " CASCADE");
             } else if (self.restrict_flag) {
-                try buf.appendSlice(" RESTRICT");
+                try buf.appendSlice(self.allocator, " RESTRICT");
             }
 
-            return buf.toOwnedSlice();
+            return buf.toOwnedSlice(self.allocator);
         }
 
         /// 执行 DROP TABLE 语句
@@ -2535,26 +2535,26 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 构建 DROP INDEX SQL 语句
         pub fn build(self: *Self) ![]const u8 {
-            var buf = std.ArrayList(u8).init(self.allocator);
-            errdefer buf.deinit();
+            var buf = std.ArrayList(u8){};
+            errdefer buf.deinit(self.allocator);
 
-            try buf.appendSlice("DROP INDEX ");
+            try buf.appendSlice(self.allocator, "DROP INDEX ");
 
             if (self.if_exists_flag) {
-                try buf.appendSlice("IF EXISTS ");
+                try buf.appendSlice(self.allocator, "IF EXISTS ");
             }
 
             // MySQL 语法: DROP INDEX index_name ON table_name
             // PostgreSQL/SQLite 语法: DROP INDEX index_name
             if (dialect == .postgresql) {
-                try buf.appendSlice(self.index_name);
-                try buf.appendSlice(" ON ");
-                try buf.appendSlice(self.table_name);
+                try buf.appendSlice(self.allocator, self.index_name);
+                try buf.appendSlice(self.allocator, " ON ");
+                try buf.appendSlice(self.allocator, self.table_name);
             } else {
-                try buf.appendSlice(self.index_name);
+                try buf.appendSlice(self.allocator, self.index_name);
             }
 
-            return buf.toOwnedSlice();
+            return buf.toOwnedSlice(self.allocator);
         }
 
         /// 执行 DROP INDEX 语句

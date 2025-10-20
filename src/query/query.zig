@@ -55,7 +55,7 @@ pub const OnDuplicateKeyUpdate = types.OnDuplicateKeyUpdate;
 ///          .orderBy("id DESC")
 ///          .limit(10);
 ///
-/// const sql = try query.build();
+/// const sql = try query.build(null);
 /// ```
 pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
     const DBType = db_mod.DB(dialect);
@@ -131,6 +131,45 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// 选择所有列
         pub fn columnAll(self: *Self) !*Self {
             try self.columns.append(self.allocator, "*");
+            return self;
+        }
+
+        /// 通过 comptime 反射自动选择模型所有字段
+        ///
+        /// 使用 Zig 的编译时反射 (@typeInfo) 遍历结构体字段，
+        /// 并将所有字段名添加到列列表。这是一个零运行时开销的操作。
+        ///
+        /// **行为**：
+        /// - 追加到现有列列表（不清空）
+        /// - 支持与 `column()` 混合使用
+        /// - 编译时展开，无运行时反射开销
+        ///
+        /// 返回:
+        /// - *Self: 支持链式调用
+        ///
+        /// 示例:
+        /// ```zig
+        /// // 自动选择 User 的所有字段
+        /// const users = try db.newSelect(User)
+        ///     .allColumns()
+        ///     .where("age > $1", .{18})
+        ///     .scan();
+        ///
+        /// // 混合使用：先选择聚合函数，再选择所有字段
+        /// const results = try db.newSelect(User)
+        ///     .column("COUNT(*) OVER () as total")
+        ///     .allColumns()
+        ///     .scan();
+        /// ```
+        pub fn allColumns(self: *Self) !*Self {
+            const type_info = @typeInfo(T);
+            if (type_info != .@"struct") {
+                @compileError("allColumns requires a struct type");
+            }
+            const fields = type_info.@"struct".fields;
+            inline for (fields) |field| {
+                try self.columns.append(self.allocator, field.name);
+            }
             return self;
         }
 
@@ -240,97 +279,134 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 构建 SQL 查询字符串
-        pub fn build(self: *Self) ![]const u8 {
-            var buf = std.ArrayList(u8){};
-            errdefer buf.deinit(self.allocator);
+        ///
+        /// 参数:
+        /// - alloc: 可选的 allocator，用于 SQL 字符串分配。如果为 null，使用 self.allocator
+        ///         推荐使用 QueryContext.allocator() 以优化临时内存管理
+        ///
+        /// 返回:
+        /// - 构建的 SQL 字符串。调用者负责释放（或使用 QueryContext 自动管理）
+        ///
+        /// 示例:
+        /// ```zig
+        /// // 使用 QueryContext (推荐)
+        /// var ctx = QueryContext.init(db.allocator);
+        /// defer ctx.deinit();
+        /// const sql = try query.build(ctx.allocator());
+        ///
+        /// // 或使用默认 allocator
+        /// const sql = try query.build(null);
+        /// defer db.allocator.free(sql);
+        /// ```
+        pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
+            const allocator = alloc orelse self.allocator;
+            var buf = std.ArrayList(u8).init(allocator);
+            errdefer buf.deinit();
 
             // SELECT [DISTINCT]
-            try buf.appendSlice(self.allocator, "SELECT ");
+            try buf.appendSlice("SELECT ");
             if (self.distinct_value) {
-                try buf.appendSlice(self.allocator, "DISTINCT ");
+                try buf.appendSlice("DISTINCT ");
             }
 
             // 列
             if (self.columns.items.len > 0) {
                 for (self.columns.items, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, col);
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(col);
                 }
             } else {
-                try buf.appendSlice(self.allocator, "*");
+                try buf.appendSlice("*");
             }
 
             // FROM
-            try buf.appendSlice(self.allocator, " FROM ");
-            try buf.appendSlice(self.allocator, self.table_name);
+            try buf.appendSlice(" FROM ");
+            try buf.appendSlice(self.table_name);
 
             // JOINs
             for (self.join_clauses.items) |join_clause| {
-                try buf.appendSlice(self.allocator, " ");
-                try buf.appendSlice(self.allocator, join_clause.join_type.toSQL());
-                try buf.appendSlice(self.allocator, " ");
-                try buf.appendSlice(self.allocator, join_clause.table);
+                try buf.appendSlice(" ");
+                try buf.appendSlice(join_clause.join_type.toSQL());
+                try buf.appendSlice(" ");
+                try buf.appendSlice(join_clause.table);
 
                 // CROSS JOIN 不需要 ON 条件
                 if (join_clause.join_type != .cross) {
-                    try buf.appendSlice(self.allocator, " ON ");
-                    try buf.appendSlice(self.allocator, join_clause.condition);
+                    try buf.appendSlice(" ON ");
+                    try buf.appendSlice(join_clause.condition);
                 }
             }
 
             // WHERE
             if (self.where_clauses.items.len > 0) {
-                try buf.appendSlice(self.allocator, " WHERE ");
+                try buf.appendSlice(" WHERE ");
                 for (self.where_clauses.items, 0..) |clause, i| {
                     if (i > 0) {
-                        try buf.appendSlice(self.allocator, " ");
-                        try buf.appendSlice(self.allocator, clause.operator.toSQL());
-                        try buf.appendSlice(self.allocator, " ");
+                        try buf.appendSlice(" ");
+                        try buf.appendSlice(clause.operator.toSQL());
+                        try buf.appendSlice(" ");
                     }
-                    try buf.appendSlice(self.allocator, clause.condition);
+                    try buf.appendSlice(clause.condition);
                 }
             }
 
             // GROUP BY
             if (self.group_by_columns.items.len > 0) {
-                try buf.appendSlice(self.allocator, " GROUP BY ");
+                try buf.appendSlice(" GROUP BY ");
                 for (self.group_by_columns.items, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, col);
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(col);
                 }
             }
 
             // HAVING
             if (self.having_clauses.items.len > 0) {
-                try buf.appendSlice(self.allocator, " HAVING ");
+                try buf.appendSlice(" HAVING ");
                 for (self.having_clauses.items, 0..) |clause, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, " AND ");
-                    try buf.appendSlice(self.allocator, clause.condition);
+                    if (i > 0) try buf.appendSlice(" AND ");
+                    try buf.appendSlice(clause.condition);
                 }
             }
 
             // ORDER BY
             if (self.order_by_clauses.items.len > 0) {
-                try buf.appendSlice(self.allocator, " ORDER BY ");
+                try buf.appendSlice(" ORDER BY ");
                 for (self.order_by_clauses.items, 0..) |order_clause, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, order_clause.column);
-                    try buf.appendSlice(self.allocator, " ");
-                    try buf.appendSlice(self.allocator, order_clause.direction.toSQL());
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(order_clause.column);
+                    try buf.appendSlice(" ");
+                    try buf.appendSlice(order_clause.direction.toSQL());
                 }
             }
 
             // LIMIT
             if (self.limit_value) |limit_val| {
-                try std.fmt.format(buf.writer(self.allocator), " LIMIT {d}", .{limit_val});
+                try std.fmt.format(buf.writer(), " LIMIT {d}", .{limit_val});
             }
 
             // OFFSET
             if (self.offset_value) |offset_val| {
-                try std.fmt.format(buf.writer(self.allocator), " OFFSET {d}", .{offset_val});
+                try std.fmt.format(buf.writer(), " OFFSET {d}", .{offset_val});
             }
 
-            return buf.toOwnedSlice(self.allocator);
+            return buf.toOwnedSlice();
+        }
+
+        /// 构建 SQL 查询字符串（使用默认 allocator）
+        ///
+        /// 这是 `build(null)` 的别名方法，符合功能规格 2.2.1 定义。
+        /// 使用 self.allocator 进行内存分配。
+        ///
+        /// 返回:
+        /// - 构建的 SQL 字符串。调用者负责使用 self.allocator.free() 释放
+        ///
+        /// 示例:
+        /// ```zig
+        /// const sql = try query.buildSQL();
+        /// defer query.allocator.free(sql);
+        /// ```
+        pub fn buildSQL(self: *Self) ![]const u8 {
+            return self.build(null);
         }
 
         /// 执行查询并扫描一条记录
@@ -352,19 +428,15 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// const user = try query.where("id = $1", .{1}).scanOne();
         /// ```
         pub fn scanOne(self: *Self) !T {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
-            // 收集所有参数
-            var all_args = std.ArrayList(QueryArg){};
-            defer all_args.deinit(self.allocator);
-
-            for (self.where_clauses.items) |clause| {
-                try all_args.appendSlice(self.allocator, clause.args);
-            }
+            // 使用 collectArgs 收集所有参数
+            const all_args = try self.collectArgs();
+            defer self.allocator.free(all_args);
 
             // 执行查询
-            var result = try self.db.query(query_str, all_args.items);
+            var result = try self.db.query(query_str, all_args);
             defer result.close(); // close 会自动调用 rows.deinit()
 
             // 使用 result_scanner 扫描单行
@@ -440,16 +512,12 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             const query_str = try buf.toOwnedSlice(self.allocator);
             defer self.allocator.free(query_str);
 
-            // 收集所有参数
-            var all_args = std.ArrayList(QueryArg){};
-            defer all_args.deinit(self.allocator);
-
-            for (self.where_clauses.items) |clause| {
-                try all_args.appendSlice(self.allocator, clause.args);
-            }
+            // 使用 collectArgs 收集所有参数
+            const all_args = try self.collectArgs();
+            defer self.allocator.free(all_args);
 
             // 执行查询
-            var result = try self.db.query(query_str, all_args.items);
+            var result = try self.db.query(query_str, all_args);
             defer result.close(); // close 会自动调用 rows.deinit()
 
             // 获取第一行
@@ -461,6 +529,37 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             // 提取 count 值（第一列）
             const count_value = row.get(i64, 0);
             return @intCast(count_value);
+        }
+
+        /// 收集所有查询参数（内部方法）
+        ///
+        /// 统一收集 WHERE 和 HAVING 子句中的所有参数，
+        /// 按照它们在查询中出现的顺序返回。
+        ///
+        /// **生命周期**：
+        /// - 返回的切片由调用者负责释放
+        /// - 使用 `defer self.allocator.free(args)` 确保正确释放
+        ///
+        /// 返回:
+        /// - []const QueryArg: 参数切片（需调用者释放）
+        ///
+        /// 错误:
+        /// - error.OutOfMemory: 内存分配失败
+        fn collectArgs(self: *Self) ![]const QueryArg {
+            var args: std.ArrayList(QueryArg) = .{};
+            errdefer args.deinit(self.allocator);
+
+            // 收集 WHERE 子句参数
+            for (self.where_clauses.items) |clause| {
+                try args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 收集 HAVING 子句参数
+            for (self.having_clauses.items) |clause| {
+                try args.appendSlice(self.allocator, clause.args);
+            }
+
+            return try args.toOwnedSlice(self.allocator);
         }
 
         /// 执行查询并扫描多条记录
@@ -482,19 +581,15 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// defer self.allocator.free(users);
         /// ```
         pub fn scan(self: *Self) ![]T {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
-            // 收集所有参数
-            var all_args = std.ArrayList(QueryArg){};
-            defer all_args.deinit(self.allocator);
-
-            for (self.where_clauses.items) |clause| {
-                try all_args.appendSlice(self.allocator, clause.args);
-            }
+            // 使用 collectArgs 收集所有参数
+            const all_args = try self.collectArgs();
+            defer self.allocator.free(all_args);
 
             // 执行查询
-            var result = try self.db.query(query_str, all_args.items);
+            var result = try self.db.query(query_str, all_args);
             defer result.close(); // close 会自动调用 rows.deinit()
 
             // 使用 ArrayList 收集结果
@@ -608,7 +703,7 @@ fn replacePlaceholders(allocator: Allocator, sql: []const u8, start_index: usize
 /// // PostgreSQL: 使用 RETURNING
 /// try query.returning(&.{"id", "created_at"});
 ///
-/// const sql = try query.build();
+/// const sql = try query.build(null);
 /// ```
 pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
     const DBType = db_mod.DB(dialect);
@@ -836,70 +931,77 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             return base_size + cols_size + (row_size * total_rows);
         }
 
-        pub fn build(self: *Self) ![]const u8 {
+        /// 构建 INSERT SQL 语句
+        ///
+        /// 参数:
+        /// - alloc: 可选的 allocator，用于 SQL 字符串分配。如果为 null，使用 self.allocator
+        ///         推荐使用 QueryContext.allocator() 以优化临时内存管理
+        pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             if (self.columns.items.len == 0 or self.values_list.items.len == 0) {
                 return error.NoValuesToInsert;
             }
 
+            const allocator = alloc orelse self.allocator;
+
             // AC1.5.2: 内存优化 - 预估并预分配 SQL 缓冲区
             const estimated_size = self.estimateSQLSize();
-            var buf = std.ArrayList(u8){};
-            errdefer buf.deinit(self.allocator);
-            try buf.ensureTotalCapacity(self.allocator, estimated_size);
+            var buf = std.ArrayList(u8).init(allocator);
+            errdefer buf.deinit();
+            try buf.ensureTotalCapacity(estimated_size);
 
             // INSERT INTO table (columns)
-            try buf.appendSlice(self.allocator, "INSERT INTO ");
-            try buf.appendSlice(self.allocator, self.table_name);
-            try buf.appendSlice(self.allocator, " (");
+            try buf.appendSlice("INSERT INTO ");
+            try buf.appendSlice(self.table_name);
+            try buf.appendSlice(" (");
 
             for (self.columns.items, 0..) |col, i| {
-                if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                try buf.appendSlice(self.allocator, col);
+                if (i > 0) try buf.appendSlice(", ");
+                try buf.appendSlice(col);
             }
 
-            try buf.appendSlice(self.allocator, ") VALUES ");
+            try buf.appendSlice(") VALUES ");
 
             // AC1.5.2: 多行 VALUES (...), (...), (...)
             var param_index: usize = 1;
             for (self.values_list.items, 0..) |_, row_idx| {
-                if (row_idx > 0) try buf.appendSlice(self.allocator, ", ");
-                try buf.appendSlice(self.allocator, "(");
+                if (row_idx > 0) try buf.appendSlice(", ");
+                try buf.appendSlice("(");
 
                 for (self.columns.items, 0..) |_, col_idx| {
-                    if (col_idx > 0) try buf.appendSlice(self.allocator, ", ");
+                    if (col_idx > 0) try buf.appendSlice(", ");
 
                     // 生成 PostgreSQL 占位符 $N
-                    try std.fmt.format(buf.writer(self.allocator), "${d}", .{param_index});
+                    try std.fmt.format(buf.writer(), "${d}", .{param_index});
                     param_index += 1;
                 }
 
-                try buf.appendSlice(self.allocator, ")");
+                try buf.appendSlice(")");
             }
 
             // ON CONFLICT (PostgreSQL/SQLite)
             if (self.on_conflict) |conflict| {
-                try buf.appendSlice(self.allocator, " ON CONFLICT");
+                try buf.appendSlice(" ON CONFLICT");
 
                 if (conflict.columns) |cols| {
-                    try buf.appendSlice(self.allocator, " (");
+                    try buf.appendSlice(" (");
                     for (cols, 0..) |col, i| {
-                        if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                        try buf.appendSlice(self.allocator, col);
+                        if (i > 0) try buf.appendSlice(", ");
+                        try buf.appendSlice(col);
                     }
-                    try buf.appendSlice(self.allocator, ")");
+                    try buf.appendSlice(")");
                 }
 
-                try buf.appendSlice(self.allocator, " ");
-                try buf.appendSlice(self.allocator, conflict.action.toSQL());
+                try buf.appendSlice(" ");
+                try buf.appendSlice(conflict.action.toSQL());
 
                 if (conflict.action == .do_update) {
                     if (conflict.update_columns) |update_cols| {
-                        try buf.appendSlice(self.allocator, " SET ");
+                        try buf.appendSlice(" SET ");
                         for (update_cols, 0..) |col, i| {
-                            if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                            try buf.appendSlice(self.allocator, col);
-                            try buf.appendSlice(self.allocator, " = EXCLUDED.");
-                            try buf.appendSlice(self.allocator, col);
+                            if (i > 0) try buf.appendSlice(", ");
+                            try buf.appendSlice(col);
+                            try buf.appendSlice(" = EXCLUDED.");
+                            try buf.appendSlice(col);
                         }
                     }
                 }
@@ -907,31 +1009,31 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // ON DUPLICATE KEY UPDATE (MySQL)
             if (self.on_duplicate_key) |dup_key| {
-                try buf.appendSlice(self.allocator, " ON DUPLICATE KEY UPDATE ");
+                try buf.appendSlice(" ON DUPLICATE KEY UPDATE ");
                 for (dup_key.columns, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, col);
-                    try buf.appendSlice(self.allocator, " = VALUES(");
-                    try buf.appendSlice(self.allocator, col);
-                    try buf.appendSlice(self.allocator, ")");
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(col);
+                    try buf.appendSlice(" = VALUES(");
+                    try buf.appendSlice(col);
+                    try buf.appendSlice(")");
                 }
             }
 
             // AC1.5.3: RETURNING 子句支持批量返回
             if (self.returning_columns) |ret_cols| {
-                try buf.appendSlice(self.allocator, " RETURNING ");
+                try buf.appendSlice(" RETURNING ");
                 for (ret_cols, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, col);
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(col);
                 }
             }
 
-            return buf.toOwnedSlice(self.allocator);
+            return buf.toOwnedSlice();
         }
 
         /// 执行插入查询
         pub fn exec(self: *Self) !InsertResult {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 收集所有参数
@@ -980,7 +1082,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 return error.NoReturningColumns;
             }
 
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 收集所有参数
@@ -1016,7 +1118,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 ///          .set("email", "new_email@example.com")
 ///          .where("id = $1", .{1});
 ///
-/// const sql = try query.build();
+/// const sql = try query.build(null);
 /// ```
 pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
     const DBType = db_mod.DB(dialect);
@@ -1299,7 +1401,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ```
         pub fn whereInSubquery(self: *Self, column: []const u8, subquery: anytype) !*Self {
             // 构建子查询 SQL
-            const subquery_sql = try subquery.build();
+            const subquery_sql = try subquery.build(null);
             defer self.allocator.free(subquery_sql);
 
             // 构建 IN 子句: column IN (subquery)
@@ -1344,59 +1446,46 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         ///
         /// 生成完整的 UPDATE SQL，包括占位符替换
         ///
-        /// ## 返回
-        /// 返回构建的 SQL 字符串，调用者负责释放内存
-        ///
-        /// ## 错误
-        /// - NoColumnsToUpdate: 没有设置任何要更新的列
-        /// 构建 UPDATE SQL 语句
-        ///
-        /// 生成完整的 UPDATE SQL，包括占位符替换
+        /// ## 参数
+        /// - alloc: 可选的 allocator，用于 SQL 字符串分配。如果为 null，使用 self.allocator
+        ///         推荐使用 QueryContext.allocator() 以优化临时内存管理
         ///
         /// ## 返回
         /// 返回构建的 SQL 字符串，调用者负责释放内存
         ///
         /// ## 错误
         /// - NoColumnsToUpdate: 没有设置任何要更新的列
-        /// 构建 UPDATE SQL 语句
-        ///
-        /// 生成完整的 UPDATE SQL，包括占位符替换
-        ///
-        /// ## 返回
-        /// 返回构建的 SQL 字符串，调用者负责释放内存
-        ///
-        /// ## 错误
-        /// - NoColumnsToUpdate: 没有设置任何要更新的列
-        pub fn build(self: *Self) ![]const u8 {
+        pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             if (self.set_clauses.items.len == 0) {
                 return error.NoColumnsToUpdate;
             }
 
-            var buf = std.ArrayList(u8){};
-            errdefer buf.deinit(self.allocator);
+            const allocator = alloc orelse self.allocator;
+            var buf = std.ArrayList(u8).init(allocator);
+            errdefer buf.deinit();
 
             // UPDATE table
-            try buf.appendSlice(self.allocator, "UPDATE ");
-            try buf.appendSlice(self.allocator, self.table_name);
+            try buf.appendSlice("UPDATE ");
+            try buf.appendSlice(self.table_name);
 
             // SET column = value
-            try buf.appendSlice(self.allocator, " SET ");
+            try buf.appendSlice(" SET ");
 
             // 计算 SET 子句的参数数量（用于占位符编号）
             var param_index: usize = 1;
 
             for (self.set_clauses.items, 0..) |set_clause, i| {
-                if (i > 0) try buf.appendSlice(self.allocator, ", ");
+                if (i > 0) try buf.appendSlice(", ");
 
                 // 替换 SET 子句中的占位符 (? -> $N)
                 const replaced_assignment = try replacePlaceholders(
-                    self.allocator,
+                    allocator,
                     set_clause.assignment,
                     param_index,
                     dialect,
                 );
-                defer self.allocator.free(replaced_assignment);
-                try buf.appendSlice(self.allocator, replaced_assignment);
+                defer allocator.free(replaced_assignment);
+                try buf.appendSlice(replaced_assignment);
 
                 // 根据实际参数数量增加索引
                 param_index += set_clause.args.len;
@@ -1404,23 +1493,23 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // WHERE
             if (self.where_clauses.items.len > 0) {
-                try buf.appendSlice(self.allocator, " WHERE ");
+                try buf.appendSlice(" WHERE ");
                 for (self.where_clauses.items, 0..) |clause, i| {
                     if (i > 0) {
-                        try buf.appendSlice(self.allocator, " ");
-                        try buf.appendSlice(self.allocator, clause.operator.toSQL());
-                        try buf.appendSlice(self.allocator, " ");
+                        try buf.appendSlice(" ");
+                        try buf.appendSlice(clause.operator.toSQL());
+                        try buf.appendSlice(" ");
                     }
 
                     // 替换 WHERE 子句中的占位符 (? -> $N)
                     const replaced_condition = try replacePlaceholders(
-                        self.allocator,
+                        allocator,
                         clause.condition,
                         param_index,
                         dialect,
                     );
-                    defer self.allocator.free(replaced_condition);
-                    try buf.appendSlice(self.allocator, replaced_condition);
+                    defer allocator.free(replaced_condition);
+                    try buf.appendSlice(replaced_condition);
 
                     // 根据实际参数数量增加索引
                     param_index += clause.args.len;
@@ -1429,14 +1518,14 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // RETURNING (PostgreSQL/SQLite)
             if (self.returning_columns) |ret_cols| {
-                try buf.appendSlice(self.allocator, " RETURNING ");
+                try buf.appendSlice(" RETURNING ");
                 for (ret_cols, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, col);
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(col);
                 }
             }
 
-            return buf.toOwnedSlice(self.allocator);
+            return buf.toOwnedSlice();
         }
 
         /// 执行更新查询，返回受影响的行数
@@ -1454,7 +1543,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         /// std.debug.print("更新了 {} 行\n", .{result.rows_affected});
         /// ```
         pub fn exec(self: *Self) !UpdateResult {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 收集所有参数 (SET + WHERE)
@@ -1506,7 +1595,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
                 @compileError("RETURNING is not supported by " ++ @tagName(dialect));
             }
 
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 收集所有参数 (SET + WHERE)
@@ -1547,7 +1636,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 /// try query.where("age < $1", .{18})
 ///          .where("email IS NULL", .{});
 ///
-/// const sql = try query.build();
+/// const sql = try query.build(null);
 /// ```
 pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
     const DBType = db_mod.DB(dialect);
@@ -1791,44 +1880,49 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         ///
         /// 生成完整的 DELETE SQL，包括占位符替换
         ///
+        /// ## 参数
+        /// - alloc: 可选的 allocator，用于 SQL 字符串分配。如果为 null，使用 self.allocator
+        ///         推荐使用 QueryContext.allocator() 以优化临时内存管理
+        ///
         /// ## 返回
         /// 返回构建的 SQL 字符串，调用者负责释放内存
         ///
         /// ## 错误
         /// - MissingWhereClause: 未设置 WHERE 条件（安全检查）
-        pub fn build(self: *Self) ![]const u8 {
+        pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             // 安全检查：强制要求 WHERE 条件
             if (!self.has_where) {
                 return error.MissingWhereClause;
             }
 
-            var buf = std.ArrayList(u8){};
-            errdefer buf.deinit(self.allocator);
+            const allocator = alloc orelse self.allocator;
+            var buf = std.ArrayList(u8).init(allocator);
+            errdefer buf.deinit();
 
             // DELETE FROM table
-            try buf.appendSlice(self.allocator, "DELETE FROM ");
-            try buf.appendSlice(self.allocator, self.table_name);
+            try buf.appendSlice("DELETE FROM ");
+            try buf.appendSlice(self.table_name);
 
             // WHERE
-            try buf.appendSlice(self.allocator, " WHERE ");
+            try buf.appendSlice(" WHERE ");
             var param_index: usize = 1;
 
             for (self.where_clauses.items, 0..) |clause, i| {
                 if (i > 0) {
-                    try buf.appendSlice(self.allocator, " ");
-                    try buf.appendSlice(self.allocator, clause.operator.toSQL());
-                    try buf.appendSlice(self.allocator, " ");
+                    try buf.appendSlice(" ");
+                    try buf.appendSlice(clause.operator.toSQL());
+                    try buf.appendSlice(" ");
                 }
 
                 // 替换 WHERE 子句中的占位符 (? -> $N)
                 const replaced_condition = try replacePlaceholders(
-                    self.allocator,
+                    allocator,
                     clause.condition,
                     param_index,
                     dialect,
                 );
-                defer self.allocator.free(replaced_condition);
-                try buf.appendSlice(self.allocator, replaced_condition);
+                defer allocator.free(replaced_condition);
+                try buf.appendSlice(replaced_condition);
 
                 // 根据实际参数数量增加索引
                 param_index += clause.args.len;
@@ -1836,14 +1930,14 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // RETURNING (PostgreSQL/SQLite)
             if (self.returning_columns) |ret_cols| {
-                try buf.appendSlice(self.allocator, " RETURNING ");
+                try buf.appendSlice(" RETURNING ");
                 for (ret_cols, 0..) |col, i| {
-                    if (i > 0) try buf.appendSlice(self.allocator, ", ");
-                    try buf.appendSlice(self.allocator, col);
+                    if (i > 0) try buf.appendSlice(", ");
+                    try buf.appendSlice(col);
                 }
             }
 
-            return buf.toOwnedSlice(self.allocator);
+            return buf.toOwnedSlice();
         }
 
         /// 执行删除查询，返回受影响的行数
@@ -1865,7 +1959,7 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         /// std.debug.print("删除了 {d} 行\n", .{result.rows_affected});
         /// ```
         pub fn exec(self: *Self) !DeleteResult {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 收集所有参数
@@ -1911,7 +2005,7 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
                 @compileError("RETURNING is not supported by " ++ @tagName(dialect));
             }
 
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 收集所有参数
@@ -2101,7 +2195,7 @@ pub fn CreateTableQuery(comptime T: type, comptime dialect: Dialect) type {
         /// - error.QueryFailed: DDL 执行失败
         /// - error.TableAlreadyExists: 表已存在（未使用 IF NOT EXISTS 时）
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             // 执行 DDL（无参数绑定）
@@ -2219,7 +2313,7 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 执行 DROP TABLE 语句
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             try self.db.exec(query_str, &.{});
@@ -2371,7 +2465,7 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 执行 CREATE INDEX 语句
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             try self.db.exec(query_str, &.{});
@@ -2465,7 +2559,7 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 执行 DROP INDEX 语句
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build();
+            const query_str = try self.build(null);
             defer self.allocator.free(query_str);
 
             try self.db.exec(query_str, &.{});
@@ -2715,7 +2809,7 @@ test "SelectQuery: SELECT * FROM" {
     var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
     defer query.deinit();
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users", sql);
@@ -2735,7 +2829,7 @@ test "SelectQuery: SELECT specific columns" {
     _ = try query.column("name");
     _ = try query.column("email");
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT id, name, email FROM users", sql);
@@ -2753,7 +2847,7 @@ test "SelectQuery: WHERE clause" {
 
     _ = try query.where("age > $1", .{18});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users WHERE age > $1", sql);
@@ -2773,7 +2867,7 @@ test "SelectQuery: Multiple WHERE clauses (AND/OR)" {
     _ = try query.where("status = $2", .{"active"});
     _ = try query.whereOr("role = $3", .{"admin"});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users WHERE age > $1 AND status = $2 OR role = $3", sql);
@@ -2791,7 +2885,7 @@ test "SelectQuery: INNER JOIN" {
 
     _ = try query.innerJoin("orders", "users.id = orders.user_id");
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users INNER JOIN orders ON users.id = orders.user_id", sql);
@@ -2810,7 +2904,7 @@ test "SelectQuery: Multiple JOINs" {
     _ = try query.leftJoin("orders", "users.id = orders.user_id");
     _ = try query.innerJoin("products", "orders.product_id = products.id");
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users LEFT JOIN orders ON users.id = orders.user_id INNER JOIN products ON orders.product_id = products.id", sql);
@@ -2829,7 +2923,7 @@ test "SelectQuery: ORDER BY" {
     _ = try query.orderBy("created_at", .desc);
     _ = try query.orderBy("name", .asc);
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users ORDER BY created_at DESC, name ASC", sql);
@@ -2850,7 +2944,7 @@ test "SelectQuery: GROUP BY and HAVING" {
     _ = try query.groupBy("department");
     _ = try query.having("COUNT(*) > $1", .{10});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT department, COUNT(*) as count FROM users GROUP BY department HAVING COUNT(*) > $1", sql);
@@ -2869,7 +2963,7 @@ test "SelectQuery: LIMIT and OFFSET" {
     _ = try query.limit(10);
     _ = try query.offset(20);
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT * FROM users LIMIT 10 OFFSET 20", sql);
@@ -2888,7 +2982,7 @@ test "SelectQuery: DISTINCT" {
     _ = try query.column("department");
     _ = try query.distinct();
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT DISTINCT department FROM users", sql);
@@ -2916,7 +3010,7 @@ test "SelectQuery: Complete complex query" {
     _ = try query.orderBy("order_count", .desc);
     _ = try query.limit(10);
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "SELECT u.id, u.name, COUNT(o.id) as order_count FROM users " ++
@@ -2952,7 +3046,7 @@ test "InsertQuery: 单行插入 (PostgreSQL)" {
         .age = 25,
     });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3)", sql);
@@ -2976,7 +3070,7 @@ test "InsertQuery: 批量插入" {
 
     _ = try query.values(&users);
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "INSERT INTO users (name, email, age) VALUES " ++
@@ -3003,7 +3097,7 @@ test "InsertQuery: RETURNING (PostgreSQL)" {
 
     _ = try query.returning(&.{ "id", "name" });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3) RETURNING id, name", sql);
@@ -3032,7 +3126,7 @@ test "InsertQuery: ON CONFLICT DO NOTHING (PostgreSQL)" {
         .update_columns = null,
     });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3) ON CONFLICT (email) DO NOTHING", sql);
@@ -3062,7 +3156,7 @@ test "InsertQuery: ON CONFLICT DO UPDATE (PostgreSQL)" {
         .update_columns = &update_cols,
     });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) " ++
@@ -3098,7 +3192,7 @@ test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
 
     _ = try query.returning(&.{"id"});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3), ($4, $5, $6) " ++
@@ -3126,7 +3220,7 @@ test "UpdateQuery: 基本UPDATE (PostgreSQL)" {
 
     _ = try query.set("name = $1", .{"Alice"});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("UPDATE users SET name = $1", sql);
@@ -3146,7 +3240,7 @@ test "UpdateQuery: 多个SET子句" {
     _ = try query.set("email = $2", .{"alice@example.com"});
     _ = try query.set("age = $3", .{25});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("UPDATE users SET name = $1, email = $2, age = $3", sql);
@@ -3165,7 +3259,7 @@ test "UpdateQuery: UPDATE with WHERE" {
     _ = try query.set("name = $1", .{"Alice"});
     _ = try query.where("id = $2", .{1});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("UPDATE users SET name = $1 WHERE id = $2", sql);
@@ -3186,7 +3280,7 @@ test "UpdateQuery: UPDATE with multiple WHERE (AND/OR)" {
     _ = try query.where("status = $3", .{"active"});
     _ = try query.whereOr("role = $4", .{"admin"});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "UPDATE users SET name = $1 WHERE age > $2 AND status = $3 OR role = $4";
@@ -3207,7 +3301,7 @@ test "UpdateQuery: UPDATE with RETURNING (PostgreSQL)" {
     _ = try query.where("id = $2", .{1});
     _ = query.setReturning(&.{ "id", "updated_at" });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("UPDATE users SET name = $1 WHERE id = $2 RETURNING id, updated_at", sql);
@@ -3230,7 +3324,7 @@ test "UpdateQuery: 完整复杂UPDATE (PostgreSQL)" {
     _ = try query.where("status = $5", .{"active"});
     _ = query.setReturning(&.{"id"});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "UPDATE users SET name = $1, email = $2, age = $3 WHERE id = $4 AND status = $5 RETURNING id";
@@ -3254,7 +3348,7 @@ test "DeleteQuery: 无WHERE条件应返回错误 (安全检查)" {
     defer query.deinit();
 
     // 尝试构建没有 WHERE 条件的 DELETE 查询应该失败
-    const result = query.build();
+    const result = query.build(null);
     try std.testing.expectError(error.MissingWhereClause, result);
 }
 
@@ -3270,7 +3364,7 @@ test "DeleteQuery: DELETE with WHERE (PostgreSQL)" {
 
     _ = try query.where("id = $1", .{1});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("DELETE FROM users WHERE id = $1", sql);
@@ -3290,7 +3384,7 @@ test "DeleteQuery: DELETE with multiple WHERE (AND/OR)" {
     _ = try query.where("status = $2", .{"inactive"});
     _ = try query.whereOr("role = $3", .{"guest"});
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "DELETE FROM users WHERE age < $1 AND status = $2 OR role = $3";
@@ -3310,7 +3404,7 @@ test "DeleteQuery: DELETE with RETURNING (PostgreSQL)" {
     _ = try query.where("id = $1", .{1});
     _ = query.setReturning(&.{ "id", "name" });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("DELETE FROM users WHERE id = $1 RETURNING id, name", sql);
@@ -3331,7 +3425,7 @@ test "DeleteQuery: 完整复杂DELETE (PostgreSQL)" {
     _ = try query.whereOr("deleted_at IS NOT NULL", .{});
     _ = query.setReturning(&.{ "id", "name", "deleted_at" });
 
-    const sql = try query.build();
+    const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
 
     const expected = "DELETE FROM users WHERE age < $1 AND status = $2 OR deleted_at IS NOT NULL RETURNING id, name, deleted_at";
@@ -3463,4 +3557,100 @@ test "CreateTableQuery: 复合主键" {
 
     // 复合主键应该单独声明
     try std.testing.expect(std.mem.indexOf(u8, sql, "PRIMARY KEY (user_id, role_id)") != null);
+}
+
+// ============================================
+// 新增测试：SELECT 查询构建器完善功能
+// ============================================
+
+test "SelectQuery: buildSQL() 别名方法" {
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, undefined, "users");
+    defer query.deinit();
+
+    _ = try (try query.column("id")).column("name");
+
+    // 测试 buildSQL() 与 build(null) 等价
+    const sql1 = try query.build(null);
+    defer std.testing.allocator.free(sql1);
+
+    const sql2 = try query.buildSQL();
+    defer std.testing.allocator.free(sql2);
+
+    try std.testing.expectEqualStrings(sql1, sql2);
+}
+
+test "SelectQuery: allColumns() comptime 反射" {
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, undefined, "users");
+    defer query.deinit();
+
+    // 使用 allColumns 自动添加所有字段
+    _ = try query.allColumns();
+
+    // 验证所有字段都被添加
+    try std.testing.expectEqual(@as(usize, 4), query.columns.items.len);
+    try std.testing.expectEqualStrings("id", query.columns.items[0]);
+    try std.testing.expectEqualStrings("name", query.columns.items[1]);
+    try std.testing.expectEqualStrings("email", query.columns.items[2]);
+    try std.testing.expectEqualStrings("age", query.columns.items[3]);
+}
+
+test "SelectQuery: allColumns() 与 column() 混合使用" {
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, undefined, "users");
+    defer query.deinit();
+
+    // 混合使用：先添加自定义列，再添加所有字段，最后再添加自定义列
+    _ = try (try (try query.column("COUNT(*) OVER () as total")).allColumns()).column("created_at");
+
+    // 验证列顺序：COUNT(*), id, name, email, age, created_at
+    try std.testing.expectEqual(@as(usize, 6), query.columns.items.len);
+    try std.testing.expectEqualStrings("COUNT(*) OVER () as total", query.columns.items[0]);
+    try std.testing.expectEqualStrings("id", query.columns.items[1]);
+    try std.testing.expectEqualStrings("name", query.columns.items[2]);
+    try std.testing.expectEqualStrings("email", query.columns.items[3]);
+    try std.testing.expectEqualStrings("age", query.columns.items[4]);
+    try std.testing.expectEqualStrings("created_at", query.columns.items[5]);
+}
+
+test "SelectQuery: collectArgs() 从 WHERE 和 HAVING 收集参数" {
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, undefined, "users");
+    defer query.deinit();
+
+    // 添加 WHERE 和 HAVING 子句
+    _ = try (try (try (try (try query.column("name")).where("age > $1", .{@as(i32, 18)})).where("email IS NOT NULL", .{})).groupBy("name")).having("COUNT(*) > $2", .{@as(i32, 5)});
+
+    // 使用 collectArgs 收集所有参数
+    const args = try query.collectArgs();
+    defer std.testing.allocator.free(args);
+
+    // 应该有 2 个参数：WHERE 的 18 和 HAVING 的 5
+    try std.testing.expectEqual(@as(usize, 2), args.len);
+
+    // 验证参数值和类型
+    switch (args[0]) {
+        .int => |val| try std.testing.expectEqual(@as(i64, 18), val),
+        else => try std.testing.expect(false),
+    }
+
+    switch (args[1]) {
+        .int => |val| try std.testing.expectEqual(@as(i64, 5), val),
+        else => try std.testing.expect(false),
+    }
+}
+
+test "SelectQuery: buildSQL() 生成完整 SQL" {
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, undefined, "users");
+    defer query.deinit();
+
+    _ = try (try (try (try query.allColumns()).where("age > $1", .{@as(i32, 18)})).orderBy("created_at", .desc)).limit(10);
+
+    const sql = try query.buildSQL();
+    defer std.testing.allocator.free(sql);
+
+    // 验证 SQL 包含所有预期部分
+    try std.testing.expect(std.mem.indexOf(u8, sql, "SELECT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id, name, email, age") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "FROM users") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE age > $1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "ORDER BY created_at DESC") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "LIMIT 10") != null);
 }

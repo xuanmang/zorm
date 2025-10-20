@@ -25,6 +25,7 @@ const Rows = driver.Rows;
 const tx_manager_mod = @import("tx_manager.zig");
 pub const TxOptions = tx_manager_mod.TxOptions;
 pub const TxManager = tx_manager_mod.TxManager;
+const result_scanner = @import("../mapper/result_scanner.zig");
 
 /// DB 配置选项
 pub const DBOptions = struct {
@@ -226,6 +227,8 @@ pub fn DB(comptime dialect: Dialect) type {
         active_tx: ?*Tx,
         /// 查询钩子列表 (支持多个钩子)
         query_hooks: std.ArrayList(QueryHook),
+        /// 连接是否已关闭
+        closed: bool,
 
         /// 创建数据库实例
         ///
@@ -251,9 +254,50 @@ pub fn DB(comptime dialect: Dialect) type {
                 .stats = .{},
                 .active_tx = null,
                 .query_hooks = .{},
+                .closed = false,
             };
 
             return self;
+        }
+
+        /// 关闭数据库连接
+        ///
+        /// 显式关闭连接,但不释放 DB 实例本身的内存。
+        /// 关闭后,所有查询操作都会返回 ConnectionClosed 错误。
+        ///
+        /// ## 注意
+        /// - 连接关闭后 DB 实例仍然存在,但无法再执行查询
+        /// - 如果有活动事务,会先回滚事务
+        /// - 重复调用 close() 是安全的(不会报错)
+        /// - 仍然需要调用 deinit() 来释放 DB 实例的内存
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var db = try DB(.postgresql).init(allocator, conn, .{});
+        /// defer db.deinit();
+        ///
+        /// try db.close(); // 显式关闭连接
+        ///
+        /// // 后续查询会失败
+        /// const result = db.query("SELECT 1", &[_]QueryArg{});
+        /// // 返回 error.ConnectionClosed
+        /// ```
+        pub fn close(self: *Self) void {
+            if (self.closed) {
+                return; // 已经关闭,直接返回
+            }
+
+            // 如果有活动事务,回滚它
+            if (self.active_tx) |tx| {
+                tx.rollback() catch {};
+                self.active_tx = null;
+            }
+
+            // 关闭连接
+            self.conn.close();
+
+            // 标记为已关闭
+            self.closed = true;
         }
 
         /// 销毁数据库实例
@@ -264,17 +308,13 @@ pub fn DB(comptime dialect: Dialect) type {
         /// - 关闭数据库连接
         /// - 释放分配的内存
         pub fn deinit(self: *Self) void {
-            // 如果有活动事务,回滚它
-            if (self.active_tx) |tx| {
-                tx.rollback() catch {};
-                self.active_tx = null;
+            // 关闭连接(如果尚未关闭)
+            if (!self.closed) {
+                self.close();
             }
 
             // 清理钩子列表
             self.query_hooks.deinit(self.allocator);
-
-            // 关闭连接
-            self.conn.close();
 
             // 释放内存
             self.allocator.destroy(self);
@@ -347,6 +387,7 @@ pub fn DB(comptime dialect: Dialect) type {
                 .stats = .{}, // 新的统计信息
                 .active_tx = null, // 新的事务状态
                 .query_hooks = .{},
+                .closed = self.closed, // 继承连接状态
             };
 
             // 复制钩子列表
@@ -384,17 +425,25 @@ pub fn DB(comptime dialect: Dialect) type {
 
         /// 扫描行到目标列表
         ///
+        /// 将行迭代器中的所有行扫描到目标 ArrayList。
+        /// 使用 field_mapper 自动映射数据库列到结构体字段。
+        ///
         /// ## 参数
         /// - T: 目标类型
         /// - rows: 行迭代器
         /// - dest: 目标 ArrayList
+        ///
+        /// ## 错误
+        /// - error.QueryFailed: 读取失败
+        /// - error.TypeMismatch: 类型不匹配
+        /// - error.OutOfMemory: 内存不足
         ///
         /// ## 示例
         /// ```zig
         /// var users = std.ArrayList(User).init(allocator);
         /// defer users.deinit();
         ///
-        /// const result = try db.query("SELECT * FROM users", .{});
+        /// const result = try db.query("SELECT * FROM users", &[_]QueryArg{});
         /// defer result.close();
         ///
         /// try db.scanRows(User, &result.rows, &users);
@@ -405,17 +454,8 @@ pub fn DB(comptime dialect: Dialect) type {
             rows: *Rows,
             dest: *std.ArrayList(T),
         ) !void {
-            _ = self;
-
-            // TODO: 实现行扫描逻辑
-            // 1. 遍历 rows
-            // 2. 为每行创建 T 实例
-            // 3. 填充字段值
-            // 4. 添加到 dest
-
-            // 临时实现,避免未使用参数警告
-            _ = rows;
-            _ = dest;
+            // 使用 result_scanner.scanAll 实现行扫描
+            try result_scanner.scanAll(T, rows, self.allocator, dest);
         }
 
         /// 执行 SQL 语句(不返回结果)
@@ -425,8 +465,14 @@ pub fn DB(comptime dialect: Dialect) type {
         /// - args: 查询参数
         ///
         /// ## 错误
-        /// 如果查询执行失败,返回相应的错误
+        /// - error.ConnectionClosed: 连接已关闭
+        /// - 其他数据库相关错误
         pub fn exec(self: *Self, query_str: []const u8, args: []const QueryArg) !void {
+            // 检查连接状态
+            if (self.closed) {
+                return error.ConnectionClosed;
+            }
+
             self.stats.recordQuery();
 
             // 执行钩子 - beforeQuery
@@ -479,7 +525,16 @@ pub fn DB(comptime dialect: Dialect) type {
         ///
         /// ## 返回
         /// 返回查询结果集,调用者负责调用 result.close() 释放资源
+        ///
+        /// ## 错误
+        /// - error.ConnectionClosed: 连接已关闭
+        /// - 其他数据库相关错误
         pub fn query(self: *Self, query_str: []const u8, args: []const QueryArg) !*Result {
+            // 检查连接状态
+            if (self.closed) {
+                return error.ConnectionClosed;
+            }
+
             self.stats.recordQuery();
 
             // 执行钩子 - beforeQuery

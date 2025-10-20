@@ -162,6 +162,86 @@ pub const Error = error{
     NoColumnsSpecified,
 };
 
+// ========== 类型别名 (Type Aliases) ==========
+
+/// 查询结果类型
+///
+/// 所有查询操作返回此类型，明确表达操作可能成功返回 T 或失败返回错误。
+/// 这是 `Error!T` 的语义化别名，提供零运行时开销。
+///
+/// ## 使用场景
+/// - 数据库查询操作（SELECT）
+/// - 数据获取操作（GET, FIND）
+/// - 任何返回数据的可能失败操作
+///
+/// ## 示例
+/// ```zig
+/// // 函数签名
+/// pub fn findUser(db: *DB, id: i64) QueryResult(User) {
+///     var query = try db.newSelect(User);
+///     defer query.deinit();
+///     try query.where("id = ?", .{id});
+///     return query.scanOne();
+/// }
+///
+/// // 使用
+/// const user = try findUser(db, 123);
+/// ```
+///
+/// ## 错误处理
+/// ```zig
+/// // 传播错误
+/// const user = try findUser(db, 123);
+///
+/// // 捕获错误
+/// const user = findUser(db, 123) catch |err| {
+///     std.log.err("Error: {}", .{err});
+///     return err;
+/// };
+/// ```
+pub fn QueryResult(comptime T: type) type {
+    return Error!T;
+}
+
+/// 空结果类型
+///
+/// 用于不返回数据的操作（如 INSERT/UPDATE/DELETE），明确表达操作可能成功或失败。
+/// 这是 `Error!void` 的语义化别名，提供零运行时开销。
+///
+/// ## 使用场景
+/// - 数据库修改操作（INSERT, UPDATE, DELETE）
+/// - 副作用操作（CONNECT, CLOSE）
+/// - 任何不返回数据的可能失败操作
+///
+/// ## 示例
+/// ```zig
+/// // 函数签名
+/// pub fn deleteUser(db: *DB, id: i64) VoidResult {
+///     var query = try db.newDelete(User);
+///     defer query.deinit();
+///     try query.where("id = ?", .{id});
+///     return query.exec();
+/// }
+///
+/// // 使用
+/// try deleteUser(db, 123);
+/// ```
+///
+/// ## 错误处理
+/// ```zig
+/// // 传播错误
+/// try deleteUser(db, 123);
+///
+/// // 捕获错误
+/// deleteUser(db, 123) catch |err| {
+///     std.log.err("Error: {}", .{err});
+///     return err;
+/// };
+/// ```
+pub const VoidResult = Error!void;
+
+// ========== 辅助函数 (Helper Functions) ==========
+
 /// 错误处理辅助函数示例
 /// 将特定错误转换为可选值(用于可恢复的场景)
 pub fn toOptional(comptime T: type, result: Error!T) ?T {
@@ -322,4 +402,175 @@ test "all error types are defined" {
 
     // 验证数组长度符合预期(26个错误,Story 2.4 新增 4个)
     try testing.expectEqual(@as(usize, 26), errors.len);
+}
+
+// ========== 类型别名测试 (Type Alias Tests) ==========
+
+test "QueryResult type alias equivalence" {
+    const testing = std.testing;
+
+    // 验证 QueryResult(T) 与 Error!T 等价
+    // 成功情况
+    const result1: QueryResult(i32) = 42;
+    const result2: Error!i32 = 42;
+    try testing.expectEqual(result2, result1);
+
+    // 错误情况
+    const result3: QueryResult(i32) = error.QueryFailed;
+    try testing.expectError(error.QueryFailed, result3);
+
+    // 类型检查
+    try testing.expectEqual(@TypeOf(result1), @TypeOf(result2));
+}
+
+test "VoidResult type alias equivalence" {
+    const testing = std.testing;
+
+    // 验证 VoidResult 与 Error!void 等价
+    // 成功情况
+    const result1: VoidResult = {};
+    const result2: Error!void = {};
+
+    // 错误情况
+    const result3: VoidResult = error.ConnectionClosed;
+    try testing.expectError(error.ConnectionClosed, result3);
+
+    // 类型检查 - 使用 void 值来比较类型
+    try result1;
+    try result2;
+    try testing.expectEqual(@TypeOf(result1), @TypeOf(result2));
+}
+
+test "QueryResult in function signatures" {
+    const testing = std.testing;
+
+    const Helper = struct {
+        fn getUserId() QueryResult(i64) {
+            return 123;
+        }
+
+        fn failingQuery() QueryResult(i64) {
+            return error.QueryFailed;
+        }
+    };
+
+    // 成功情况
+    const id = try Helper.getUserId();
+    try testing.expectEqual(@as(i64, 123), id);
+
+    // 错误情况
+    try testing.expectError(error.QueryFailed, Helper.failingQuery());
+}
+
+test "VoidResult in function signatures" {
+    const testing = std.testing;
+
+    const Helper = struct {
+        fn saveUser() VoidResult {
+            return {};
+        }
+
+        fn failingOperation() VoidResult {
+            return error.ConnectionClosed;
+        }
+    };
+
+    // 成功情况
+    try Helper.saveUser();
+
+    // 错误情况
+    try testing.expectError(error.ConnectionClosed, Helper.failingOperation());
+}
+
+test "QueryResult and Error!T compatibility" {
+    const testing = std.testing;
+
+    const User = struct {
+        id: i64,
+        name: []const u8,
+    };
+
+    const Helper = struct {
+        // 使用 Error!T
+        fn oldFunction() Error!User {
+            return User{ .id = 1, .name = "Alice" };
+        }
+
+        // 使用 QueryResult
+        fn newFunction() QueryResult(User) {
+            return User{ .id = 2, .name = "Bob" };
+        }
+    };
+
+    // 可以将 QueryResult 赋值给 Error!T
+    const user1 = try Helper.newFunction();
+    try testing.expectEqual(@as(i64, 2), user1.id);
+
+    // 可以将 Error!T 赋值给 QueryResult
+    const user2 = try Helper.oldFunction();
+    try testing.expectEqual(@as(i64, 1), user2.id);
+
+    // 类型完全等价
+    const result1: Error!User = User{ .id = 3, .name = "Charlie" };
+    const result2: QueryResult(User) = User{ .id = 4, .name = "David" };
+    try testing.expectEqual(@TypeOf(result1), @TypeOf(result2));
+}
+
+test "VoidResult and Error!void compatibility" {
+    const testing = std.testing;
+
+    const Helper = struct {
+        // 使用 Error!void
+        fn oldOperation() Error!void {
+            // 无操作
+        }
+
+        // 使用 VoidResult
+        fn newOperation() VoidResult {
+            // 无操作
+        }
+    };
+
+    // 可以将 VoidResult 赋值给 Error!void
+    try Helper.newOperation();
+
+    // 可以将 Error!void 赋值给 VoidResult
+    try Helper.oldOperation();
+
+    // 类型完全等价
+    const result1: Error!void = {};
+    const result2: VoidResult = {};
+    try testing.expectEqual(@TypeOf(result1), @TypeOf(result2));
+}
+
+test "nested QueryResult types" {
+    const testing = std.testing;
+
+    // 验证嵌套使用 QueryResult
+    const result: QueryResult(QueryResult(i32)) = @as(QueryResult(i32), 42);
+    const inner = try result;
+    const value = try inner;
+    try testing.expectEqual(@as(i32, 42), value);
+}
+
+test "QueryResult with optional types" {
+    const testing = std.testing;
+
+    const Helper = struct {
+        fn findUser(should_exist: bool) QueryResult(?i64) {
+            if (should_exist) {
+                return 123; // Some(123)
+            } else {
+                return null; // None
+            }
+        }
+    };
+
+    // 找到用户
+    const user1 = try Helper.findUser(true);
+    try testing.expectEqual(@as(?i64, 123), user1);
+
+    // 未找到用户（返回 null 而非错误）
+    const user2 = try Helper.findUser(false);
+    try testing.expectEqual(@as(?i64, null), user2);
 }

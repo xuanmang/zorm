@@ -3351,6 +3351,318 @@ test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
     try std.testing.expectEqualStrings(expected, sql);
 }
 
+test "InsertQuery: 批量大小限制检查" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 创建超过限制的批量数据（MAX_BATCH_SIZE = 1000）
+    const BatchItem = struct { name: []const u8, email: []const u8, age: u32 };
+    var large_batch = std.ArrayList(BatchItem){};
+    try large_batch.ensureTotalCapacity(std.testing.allocator, 1001);
+    defer large_batch.deinit(std.testing.allocator);
+
+    var i: usize = 0;
+    while (i < 1001) : (i += 1) {
+        try large_batch.append(std.testing.allocator, .{
+            .name = "User",
+            .email = "user@example.com",
+            .age = 25,
+        });
+    }
+
+    // 超过 1000 行限制应返回错误
+    try std.testing.expectError(error.BatchSizeTooLarge, query.values(large_batch.items));
+}
+
+test "InsertQuery: PostgreSQL 参数限制检查" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    // 创建一个大结构体（100 列）
+    const LargeRow = struct {
+        c1: i64,
+        c2: i64,
+        c3: i64,
+        c4: i64,
+        c5: i64,
+        c6: i64,
+        c7: i64,
+        c8: i64,
+        c9: i64,
+        c10: i64,
+        c11: i64,
+        c12: i64,
+        c13: i64,
+        c14: i64,
+        c15: i64,
+        c16: i64,
+        c17: i64,
+        c18: i64,
+        c19: i64,
+        c20: i64,
+        c21: i64,
+        c22: i64,
+        c23: i64,
+        c24: i64,
+        c25: i64,
+        c26: i64,
+        c27: i64,
+        c28: i64,
+        c29: i64,
+        c30: i64,
+        c31: i64,
+        c32: i64,
+        c33: i64,
+        c34: i64,
+        c35: i64,
+        c36: i64,
+        c37: i64,
+        c38: i64,
+        c39: i64,
+        c40: i64,
+        c41: i64,
+        c42: i64,
+        c43: i64,
+        c44: i64,
+        c45: i64,
+        c46: i64,
+        c47: i64,
+        c48: i64,
+        c49: i64,
+        c50: i64,
+        c51: i64,
+        c52: i64,
+        c53: i64,
+        c54: i64,
+        c55: i64,
+        c56: i64,
+        c57: i64,
+        c58: i64,
+        c59: i64,
+        c60: i64,
+        c61: i64,
+        c62: i64,
+        c63: i64,
+        c64: i64,
+        c65: i64,
+        c66: i64,
+        c67: i64,
+        c68: i64,
+        c69: i64,
+        c70: i64,
+        c71: i64,
+        c72: i64,
+        c73: i64,
+        c74: i64,
+        c75: i64,
+        c76: i64,
+        c77: i64,
+        c78: i64,
+        c79: i64,
+        c80: i64,
+        c81: i64,
+        c82: i64,
+        c83: i64,
+        c84: i64,
+        c85: i64,
+        c86: i64,
+        c87: i64,
+        c88: i64,
+        c89: i64,
+        c90: i64,
+        c91: i64,
+        c92: i64,
+        c93: i64,
+        c94: i64,
+        c95: i64,
+        c96: i64,
+        c97: i64,
+        c98: i64,
+        c99: i64,
+        c100: i64,
+    };
+
+    var query = try InsertQuery(LargeRow, .postgresql).init(std.testing.allocator, @ptrCast(&db), "large_table");
+    defer query.deinit();
+
+    // 100 列 * 656 行 = 65600 个参数（超过 65535 限制）
+    var large_batch = std.ArrayList(LargeRow){};
+    try large_batch.ensureTotalCapacity(std.testing.allocator, 656);
+    defer large_batch.deinit(std.testing.allocator);
+
+    var i: usize = 0;
+    while (i < 656) : (i += 1) {
+        try large_batch.append(std.testing.allocator, .{
+            .c1 = 1,
+            .c2 = 2,
+            .c3 = 3,
+            .c4 = 4,
+            .c5 = 5,
+            .c6 = 6,
+            .c7 = 7,
+            .c8 = 8,
+            .c9 = 9,
+            .c10 = 10,
+            .c11 = 11,
+            .c12 = 12,
+            .c13 = 13,
+            .c14 = 14,
+            .c15 = 15,
+            .c16 = 16,
+            .c17 = 17,
+            .c18 = 18,
+            .c19 = 19,
+            .c20 = 20,
+            .c21 = 21,
+            .c22 = 22,
+            .c23 = 23,
+            .c24 = 24,
+            .c25 = 25,
+            .c26 = 26,
+            .c27 = 27,
+            .c28 = 28,
+            .c29 = 29,
+            .c30 = 30,
+            .c31 = 31,
+            .c32 = 32,
+            .c33 = 33,
+            .c34 = 34,
+            .c35 = 35,
+            .c36 = 36,
+            .c37 = 37,
+            .c38 = 38,
+            .c39 = 39,
+            .c40 = 40,
+            .c41 = 41,
+            .c42 = 42,
+            .c43 = 43,
+            .c44 = 44,
+            .c45 = 45,
+            .c46 = 46,
+            .c47 = 47,
+            .c48 = 48,
+            .c49 = 49,
+            .c50 = 50,
+            .c51 = 51,
+            .c52 = 52,
+            .c53 = 53,
+            .c54 = 54,
+            .c55 = 55,
+            .c56 = 56,
+            .c57 = 57,
+            .c58 = 58,
+            .c59 = 59,
+            .c60 = 60,
+            .c61 = 61,
+            .c62 = 62,
+            .c63 = 63,
+            .c64 = 64,
+            .c65 = 65,
+            .c66 = 66,
+            .c67 = 67,
+            .c68 = 68,
+            .c69 = 69,
+            .c70 = 70,
+            .c71 = 71,
+            .c72 = 72,
+            .c73 = 73,
+            .c74 = 74,
+            .c75 = 75,
+            .c76 = 76,
+            .c77 = 77,
+            .c78 = 78,
+            .c79 = 79,
+            .c80 = 80,
+            .c81 = 81,
+            .c82 = 82,
+            .c83 = 83,
+            .c84 = 84,
+            .c85 = 85,
+            .c86 = 86,
+            .c87 = 87,
+            .c88 = 88,
+            .c89 = 89,
+            .c90 = 90,
+            .c91 = 91,
+            .c92 = 92,
+            .c93 = 93,
+            .c94 = 94,
+            .c95 = 95,
+            .c96 = 96,
+            .c97 = 97,
+            .c98 = 98,
+            .c99 = 99,
+            .c100 = 100,
+        });
+    }
+
+    // 超过 65535 参数限制应返回错误
+    try std.testing.expectError(error.ExceedsPostgreSQLParamLimit, query.values(large_batch.items));
+}
+
+test "InsertQuery: 空值列表错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 未添加任何值时 build() 应返回错误
+    try std.testing.expectError(error.NoValuesToInsert, query.build(null));
+}
+
+test "InsertQuery: SQL 缓冲区预分配优化" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 添加 10 行数据
+    var i: usize = 0;
+    while (i < 10) : (i += 1) {
+        _ = try query.value(.{
+            .name = "User",
+            .email = "user@example.com",
+            .age = 25,
+        });
+    }
+
+    // estimateSQLSize() 应该返回合理的大小估计
+    const estimated_size = query.estimateSQLSize();
+    try std.testing.expect(estimated_size > 0);
+    try std.testing.expect(estimated_size < 10000); // 合理的上限
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 实际 SQL 长度应该在估计范围内
+    try std.testing.expect(sql.len <= estimated_size * 2); // 允许 2 倍误差
+}
+
+// 注意: 以下性能测试需要真实数据库连接才能运行
+// 在集成测试中运行这些测试
+//
+// test "InsertQuery: 批量插入性能基准 (需要真实数据库)" {
+//     // AC1.5.4: 验证批量插入比单行插入快至少 10 倍
+//     // 此测试需要在集成测试环境中运行
+// }
+
 // ============================================
 // UpdateQuery 测试
 // ============================================

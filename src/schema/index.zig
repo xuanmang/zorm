@@ -116,7 +116,7 @@ pub const Index = struct {
         // IF NOT EXISTS (PostgreSQL 和 SQLite 支持)
         if (self.if_not_exists) {
             switch (dialect) {
-                .postgresql => {}, // MySQL 不支持 IF NOT EXISTS
+                .postgresql => try writer.writeAll("IF NOT EXISTS "),
             }
         }
 

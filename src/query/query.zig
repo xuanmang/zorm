@@ -708,12 +708,11 @@ fn allocArgs(allocator: Allocator, args: anytype) ![]const QueryArg {
 /// ## 返回
 /// 替换后的 SQL 字符串，调用者负责释放内存
 fn replacePlaceholders(allocator: Allocator, sql: []const u8, start_index: usize, comptime dialect: Dialect) ![]const u8 {
-    // MySQL 使用 ? 占位符，不需要替换
-    if (comptime dialect == .postgresql) {
-        return try allocator.dupe(u8, sql);
-    }
+    // PostgreSQL/SQLite 使用 $N 占位符,需要替换 ? 和 $数字
+    // (如果将来添加 MySQL 支持,它使用 ? 占位符,不需要替换)
+    _ = dialect; // PostgreSQL 专用
 
-    // PostgreSQL/SQLite 使用 $N 占位符
+    // PostgreSQL 使用 $N 占位符
     var result = std.ArrayList(u8){};
     errdefer result.deinit(allocator);
 
@@ -1092,6 +1091,18 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 执行插入查询
+        /// 执行插入查询
+        ///
+        /// ## 返回值
+        /// - InsertResult: 包含受影响行数和最后插入 ID (如适用)
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const result = try query
+        ///     .value(.{ .name = "Alice", .email = "alice@example.com" })
+        ///     .exec();
+        /// std.debug.print("插入了 {} 行\n", .{result.rows_affected});
+        /// ```
         pub fn exec(self: *Self) !InsertResult {
             const query_str = try self.build(null);
             defer self.allocator.free(query_str);
@@ -1218,14 +1229,15 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 释放资源
         pub fn deinit(self: *Self) void {
-            // 释放 SET 子句参数
+            // 释放SET 子句参数
             for (self.set_clauses.items) |clause| {
                 self.allocator.free(clause.args);
             }
             self.set_clauses.deinit(self.allocator);
 
-            // 释放 WHERE 子句参数
+            // 释放 WHERE 子句参数和 condition 字符串
             for (self.where_clauses.items) |clause| {
+                self.allocator.free(clause.condition);  // 释放 condition 字符串
                 self.allocator.free(clause.args);
             }
             self.where_clauses.deinit(self.allocator);
@@ -1275,8 +1287,12 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ```
         pub fn where(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
+            // 复制 condition 字符串以保持一致的所有权模型
+            const condition_copy = try self.allocator.dupe(u8, condition);
+            errdefer self.allocator.free(condition_copy);
+
             const clause = WhereClause{
-                .condition = condition,
+                .condition = condition_copy,
                 .args = args_slice,
                 .operator = .and_op,
             };
@@ -1296,8 +1312,12 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ```
         pub fn whereOr(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
+            // 复制 condition 字符串以保持一致的所有权模型
+            const condition_copy = try self.allocator.dupe(u8, condition);
+            errdefer self.allocator.free(condition_copy);
+
             const clause = WhereClause{
-                .condition = condition,
+                .condition = condition_copy,
                 .args = args_slice,
                 .operator = .or_op,
             };
@@ -1734,8 +1754,16 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 释放资源
         pub fn deinit(self: *Self) void {
-            // 释放 WHERE 子句参数
+            // 释放 WHERE 子句参数和动态分配的 condition 字符串
             for (self.where_clauses.items) |clause| {
+                // whereIn/whereNotIn 动态分配的 condition 需要释放
+                // 静态字符串（如 "id = ?" ）不需要释放
+                // 通过检查是否包含 "IN (" 来判断是否为动态分配
+                if (std.mem.indexOf(u8, clause.condition, " IN (") != null or
+                    std.mem.indexOf(u8, clause.condition, " NOT IN (") != null)
+                {
+                    self.allocator.free(clause.condition);
+                }
                 self.allocator.free(clause.args);
             }
             self.where_clauses.deinit(self.allocator);
@@ -3793,6 +3821,269 @@ test "UpdateQuery: 完整复杂UPDATE (PostgreSQL)" {
 }
 
 // ============================================
+// UpdateQuery 批量更新测试 (whereIn/whereNotIn/whereInSubquery)
+// ============================================
+
+test "UpdateQuery: whereIn 基本功能" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const user_ids = [_]i64{ 1, 2, 3, 4, 5 };
+    _ = try query.set("status = $1", .{"verified"});
+    _ = try query.whereIn("id", &user_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证生成的 SQL 包含 IN 子句
+    try std.testing.expect(std.mem.indexOf(u8, sql, "UPDATE users SET status = $1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE id IN ($2, $3, $4, $5, $6)") != null);
+}
+
+test "UpdateQuery: whereIn SQL 生成正确" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const user_ids = [_]i64{ 1, 2, 3 };
+    _ = try query.set("status = $1", .{"active"});
+    _ = try query.whereIn("id", &user_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证 WHERE IN 子句
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE id IN ($2, $3, $4)") != null);
+}
+
+test "UpdateQuery: whereIn 与 where 组合" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const user_ids = [_]i64{ 1, 2, 3 };
+    _ = try query.set("status = $1", .{"verified"});
+    _ = try query.where("age > $1", .{18});
+    _ = try query.whereIn("id", &user_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证同时包含 WHERE 和 IN
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE age > $2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "AND id IN ($3, $4, $5)") != null);
+}
+
+test "UpdateQuery: whereIn 空列表返回错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const empty_ids: []const i64 = &[_]i64{};
+    _ = try query.set("status = $1", .{"verified"});
+
+    const result = query.whereIn("id", empty_ids);
+    try std.testing.expectError(error.EmptyWhereIn, result);
+}
+
+test "UpdateQuery: whereNotIn 基本功能" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const excluded_ids = [_]i64{ 1, 2, 3 };
+    _ = try query.set("status = $1", .{"inactive"});
+    _ = try query.whereNotIn("id", &excluded_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证生成的 SQL 包含 NOT IN 子句
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE id NOT IN ($2, $3, $4)") != null);
+}
+
+test "UpdateQuery: whereNotIn 与 whereIn 组合" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const allowed_ids = [_]i64{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+    const excluded_ids = [_]i64{ 3, 5, 7 };
+
+    _ = try query.set("status = $1", .{"active"});
+    _ = try query.whereIn("id", &allowed_ids);
+    _ = try query.whereNotIn("id", &excluded_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证同时包含 IN 和 NOT IN
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id IN (") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id NOT IN (") != null);
+}
+
+test "UpdateQuery: whereNotIn 空列表返回错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const empty_ids: []const i64 = &[_]i64{};
+    _ = try query.set("status = $1", .{"inactive"});
+
+    const result = query.whereNotIn("id", empty_ids);
+    try std.testing.expectError(error.EmptyWhereIn, result);
+}
+
+test "UpdateQuery: whereInSubquery 基本功能" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    // 创建子查询
+    var subquery = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer subquery.deinit();
+
+    _ = try subquery.column("id");
+    _ = try subquery.where("status = $1", .{"verified"});
+
+    // 创建更新查询
+    var update = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "posts");
+    defer update.deinit();
+
+    _ = try update.set("visibility = $1", .{"public"});
+    _ = try update.whereInSubquery("user_id", subquery);
+
+    const sql = try update.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证包含子查询
+    try std.testing.expect(std.mem.indexOf(u8, sql, "UPDATE posts SET visibility = $1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE user_id IN (SELECT id FROM users WHERE status = $2)") != null);
+}
+
+test "UpdateQuery: whereInSubquery 参数合并" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    // 子查询有 2 个参数
+    var subquery = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer subquery.deinit();
+
+    _ = try subquery.column("id");
+    _ = try subquery.where("status = $1", .{"verified"});
+    _ = try subquery.where("age > $1", .{18});
+
+    // UPDATE 有 1 个 SET 参数
+    var update = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "posts");
+    defer update.deinit();
+
+    _ = try update.set("featured = $1", .{true});
+    _ = try update.whereInSubquery("user_id", subquery);
+
+    const sql = try update.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证包含子查询和参数
+    try std.testing.expect(std.mem.indexOf(u8, sql, "SET featured = $1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "SELECT id FROM users WHERE status = $2 AND age > $3") != null);
+}
+
+test "UpdateQuery: 批量更新边界条件 - 1个值" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const user_ids = [_]i64{42};
+    _ = try query.set("status = $1", .{"verified"});
+    _ = try query.whereIn("id", &user_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证单个值的 IN 子句
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE id IN ($2)") != null);
+}
+
+test "UpdateQuery: 批量更新边界条件 - 100个值" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try UpdateQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 创建 100 个 ID
+    var user_ids: [100]i64 = undefined;
+    for (&user_ids, 0..) |*id, i| {
+        id.* = @intCast(i + 1);
+    }
+
+    _ = try query.set("status = $1", .{"verified"});
+    _ = try query.whereIn("id", &user_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    // 验证包含 100 个占位符
+    try std.testing.expect(std.mem.indexOf(u8, sql, "WHERE id IN (") != null);
+
+    // 统计 $ 的数量（应该是 101：1个 SET + 100个 whereIn）
+    var count: usize = 0;
+    for (sql) |char| {
+        if (char == '$') count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 101), count);
+}
+
+// ============================================
 // DeleteQuery 测试
 // ============================================
 
@@ -3891,6 +4182,121 @@ test "DeleteQuery: 完整复杂DELETE (PostgreSQL)" {
 
     const expected = "DELETE FROM users WHERE age < $1 AND status = $2 OR deleted_at IS NOT NULL RETURNING id, name, deleted_at";
     try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "DeleteQuery: whereIn 基本功能" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const user_ids = [_]i64{ 1, 2, 3, 5, 8 };
+    _ = try query.whereIn("id", &user_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE id IN ($1, $2, $3, $4, $5)", sql);
+}
+
+test "DeleteQuery: whereIn SQL 生成正确" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const status_values = [_][]const u8{ "inactive", "suspended", "banned" };
+    _ = try query.whereIn("status", &status_values);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE status IN ($1, $2, $3)", sql);
+}
+
+test "DeleteQuery: whereIn 与 where 组合" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const user_ids = [_]i64{ 1, 2, 3 };
+    _ = try query.whereIn("id", &user_ids);
+    _ = try query.where("status = $4", .{"inactive"});
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE id IN ($1, $2, $3) AND status = $4", sql);
+}
+
+test "DeleteQuery: whereIn 空列表返回错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const empty_ids: []const i64 = &[_]i64{};
+    const result = query.whereIn("id", empty_ids);
+
+    try std.testing.expectError(error.EmptyWhereIn, result);
+}
+
+test "DeleteQuery: whereNotIn 基本功能" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const protected_ids = [_]i64{ 1, 100 };
+    _ = try query.whereNotIn("id", &protected_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE id NOT IN ($1, $2)", sql);
+}
+
+test "DeleteQuery: whereNotIn 与 whereIn 组合" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DeleteQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    const allowed_statuses = [_][]const u8{ "inactive", "suspended" };
+    const protected_ids = [_]i64{ 1, 100 };
+
+    _ = try query.whereIn("status", &allowed_statuses);
+    _ = try query.whereNotIn("id", &protected_ids);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DELETE FROM users WHERE status IN ($1, $2) AND id NOT IN ($3, $4)", sql);
 }
 
 // =============================================================================

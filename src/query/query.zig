@@ -16,6 +16,8 @@ const Allocator = std.mem.Allocator;
 const db_mod = @import("../core/db.zig");
 const Dialect = @import("../dialect/dialect.zig").Dialect;
 const types = @import("../types.zig");
+const core_types = @import("../core/types.zig");
+const tx_manager_mod = @import("../core/tx_manager.zig");
 const result_scanner = @import("../mapper/result_scanner.zig");
 
 // 重导出类型定义
@@ -4542,4 +4544,37 @@ test "SelectQuery: scan() 方法签名符合 PRD Story 1.2 AC1.2.5" {
     // 注释掉实际调用，因为需要真实的数据库连接
     // 但类型检查已经在编译时完成
     _ = &users; // 使用变量避免未使用警告
+}
+
+// ============================================
+// 事务管理测试 (PRD Story 2.4 & 2.5)
+// ============================================
+
+test "Transaction: IsolationLevel 枚举值定义正确" {
+    // TXI-001: 枚举值定义正确
+    const level1 = core_types.IsolationLevel.read_uncommitted;
+    const level2 = core_types.IsolationLevel.read_committed;
+    const level3 = core_types.IsolationLevel.repeatable_read;
+    const level4 = core_types.IsolationLevel.serializable;
+
+    try std.testing.expect(level1 != level2);
+    try std.testing.expect(level2 != level3);
+    try std.testing.expect(level3 != level4);
+}
+
+test "Transaction: IsolationLevel toSQL() 转换正确" {
+    // TXI-001: toSQL() 转换正确
+    try std.testing.expectEqualStrings("READ UNCOMMITTED", core_types.IsolationLevel.read_uncommitted.toSQL());
+    try std.testing.expectEqualStrings("READ COMMITTED", core_types.IsolationLevel.read_committed.toSQL());
+    try std.testing.expectEqualStrings("REPEATABLE READ", core_types.IsolationLevel.repeatable_read.toSQL());
+    try std.testing.expectEqualStrings("SERIALIZABLE", core_types.IsolationLevel.serializable.toSQL());
+}
+
+test "Transaction: TxOptions 默认值" {
+    // TXI-002: TxOptions 默认值
+    const opts = tx_manager_mod.TxOptions{};
+
+    try std.testing.expectEqual(@as(?core_types.IsolationLevel, null), opts.isolation_level);
+    try std.testing.expectEqual(false, opts.read_only);
+    try std.testing.expectEqual(@as(u64, 0), opts.timeout);
 }

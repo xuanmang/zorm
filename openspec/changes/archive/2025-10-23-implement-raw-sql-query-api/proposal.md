@@ -1,5 +1,34 @@
 # Implement Raw SQL Query API
 
+## Why
+查询构建器 API (SELECT/INSERT/UPDATE/DELETE Query) 虽然提供了类型安全的查询构建,但无法覆盖 PostgreSQL 的所有高级功能,如:
+- 窗口函数 (RANK, ROW_NUMBER, LAG, LEAD等)
+- 公共表表达式 (CTE) 和递归 CTE
+- 全文搜索 (to_tsvector, to_tsquery)
+- JSONB 复杂查询
+- 多表复杂 JOIN
+- 自定义聚合函数
+
+为了支持这些场景同时保持参数绑定的安全性和类型安全的结果映射,ZORM 需要提供 Raw SQL Query API。
+
+## What Changes
+本变更将 Story 2.6 (Raw SQL Query Support) 的现有实现正式化为 OpenSpec 规格,并补充完整的单元测试:
+
+1. **规格化 RawQuery API**
+   - `DB.newRaw()` 和 `Tx.newRaw()` 创建方法
+   - `exec()` 执行 DML 语句
+   - `scan()` 扫描查询结果到 ArrayList
+   - `scanOne()` 查询单行结果
+   - `deinit()` 资源释放
+
+2. **单元测试补充**
+   - RawQuery 基本功能测试 (初始化、参数转换、资源管理)
+   - 参数绑定安全性测试 (SQL 注入防护)
+   - 边界和错误场景测试 (空SQL、NULL值、Unicode等)
+
+3. **集成测试规划**
+   - 需要真实数据库环境的测试建议在 `tests/integration/` 中实现
+
 ## Overview
 完成 ZORM Raw SQL Query API 的正式化规格说明，支持执行任意 SQL 语句并提供类型安全的结果扫描。
 

@@ -74,11 +74,7 @@
 
 | 数据库 | Bun 支持 | ZORM 优先级 | Zig 实现考虑 |
 |-------|---------|------------|-------------|
-| PostgreSQL | ✅ | P0 - 必需 | libpq C 绑定 |
-| MySQL/MariaDB | ✅ | P0 - 必需 | libmysqlclient 绑定 |
-| SQLite | ✅ | P0 - 必需 | sqlite3 C API |
-| SQL Server | ✅ | P1 - 重要 | FreeTDS/ODBC |
-| Oracle | ✅ | P2 - 可选 | OCI 绑定 |
+| PostgreSQL | ✅ | P0 - 必需 | pq.zig  |
 
 ### 1.3 Zig 特性利用矩阵
 
@@ -1589,10 +1585,6 @@ zorm/
 │   │   └── raw.zig        # Raw SQL
 │   ├── dialect/
 │   │   ├── postgres.zig   # PostgreSQL 方言
-│   │   ├── mysql.zig      # MySQL 方言
-│   │   ├── sqlite.zig     # SQLite 方言
-│   │   ├── mssql.zig      # SQL Server 方言
-│   │   └── oracle.zig     # Oracle 方言
 │   ├── schema/
 │   │   ├── table.zig      # 表定义
 │   │   ├── field.zig      # 字段定义

@@ -65,6 +65,8 @@ pub const schema = struct {
     pub const getFieldSchema = @import("schema/schema.zig").getFieldSchema;
     pub const generateColumnDefinition = @import("schema/schema.zig").generateColumnDefinition;
     pub const generateColumnDefinitions = @import("schema/schema.zig").generateColumnDefinitions;
+    // Story 3.5: DROP INDEX Query API
+    pub const DropIndexQuery = @import("schema/schema.zig").DropIndexQuery;
 };
 
 // Reflection utilities for CREATE TABLE API

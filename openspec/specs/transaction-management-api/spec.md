@@ -4,14 +4,16 @@
 **Status**: Implemented
 **Related**: PRD Story 2.4
 
-## ADDED Requirements
+## Purpose
+ZORM 事务管理 API,提供类型安全的事务控制功能,包括事务开启(beginTx)、提交(commit)、回滚(rollback),支持 defer/errdefer 模式的自动资源管理,确保事务内所有操作的原子性和一致性。
+
+## Requirements
 
 ### Requirement: DB.beginTx() API
-**ID**: TXM-001
-**Priority**: P0
-**Source**: PRD AC2.4.1
 
-ZORM SHALL 提供 `db.beginTx()` 方法开启事务,返回 `*TxManager` 事务管理器对象。
+ZORM MUST 提供 `db.beginTx()` 方法开启事务,返回 `*TxManager` 事务管理器对象。
+
+**ID**: TXM-001 | **Priority**: P0 | **Source**: PRD AC2.4.1
 
 #### Scenario: 成功开启事务
 ```zig
@@ -35,11 +37,10 @@ try std.testing.expectError(error.NestedTransaction, tx2);
 ---
 
 ### Requirement: TxManager 查询构建器方法
-**ID**: TXM-002
-**Priority**: P0
-**Source**: PRD AC2.4.2
 
 TxManager MUST 提供与 DB 相同的查询构建器方法（newSelect、newInsert、newUpdate、newDelete、newRaw）。
+
+**ID**: TXM-002 | **Priority**: P0 | **Source**: PRD AC2.4.2
 
 #### Scenario: 事务中执行 INSERT
 ```zig
@@ -74,11 +75,10 @@ try tx.commit();
 ---
 
 ### Requirement: tx.commit() 提交事务
-**ID**: TXM-003
-**Priority**: P0
-**Source**: PRD AC2.4.3
 
 TxManager MUST 提供 `tx.commit()` 方法提交事务,将所有更改持久化到数据库。
+
+**ID**: TXM-003 | **Priority**: P0 | **Source**: PRD AC2.4.3
 
 #### Scenario: 提交成功后状态更新
 ```zig
@@ -106,11 +106,10 @@ try std.testing.expectError(error.AlreadyCommitted, result);
 ---
 
 ### Requirement: tx.rollback() 回滚事务
-**ID**: TXM-004
-**Priority**: P0
-**Source**: PRD AC2.4.4
 
 TxManager MUST 提供 `tx.rollback()` 方法回滚事务,撤销所有未提交的更改。
+
+**ID**: TXM-004 | **Priority**: P0 | **Source**: PRD AC2.4.4
 
 #### Scenario: 回滚成功后状态更新
 ```zig
@@ -138,11 +137,10 @@ try std.testing.expect(tx.is_rolled_back == true);
 ---
 
 ### Requirement: errdefer 自动回滚模式
-**ID**: TXM-005
-**Priority**: P0
-**Source**: PRD AC2.4.5
 
-TxManager SHALL 支持 `errdefer tx.rollback()` 模式,错误发生时自动回滚事务。
+TxManager MUST 支持 `errdefer tx.rollback()` 模式,错误发生时自动回滚事务。
+
+**ID**: TXM-005 | **Priority**: P0 | **Source**: PRD AC2.4.5
 
 #### Scenario: 错误时自动回滚
 ```zig
@@ -170,11 +168,10 @@ try std.testing.expectError(error.TestError, result);
 ---
 
 ### Requirement: 事务内操作共享连接
-**ID**: TXM-006
-**Priority**: P0
-**Source**: PRD AC2.4.6
 
 事务内的所有操作 MUST 共享同一个数据库连接,确保原子性。
+
+**ID**: TXM-006 | **Priority**: P0 | **Source**: PRD AC2.4.6
 
 #### Scenario: 验证连接复用
 ```zig
@@ -197,11 +194,10 @@ try tx.commit();
 ---
 
 ### Requirement: 嵌套事务检测
-**ID**: TXM-007
-**Priority**: P1
-**Source**: PRD AC2.4.7
 
 ZORM MUST 检测嵌套事务并返回错误（PostgreSQL 不支持真正的嵌套事务）。
+
+**ID**: TXM-007 | **Priority**: P1 | **Source**: PRD AC2.4.7
 
 #### Scenario: 检测并拒绝嵌套事务
 ```zig
@@ -230,11 +226,10 @@ try std.testing.expect(tx2.is_active == true);
 ---
 
 ### Requirement: deinit() 自动回滚
-**ID**: TXM-008
-**Priority**: P0
-**Source**: PRD AC2.4.5 (补充)
 
 如果事务仍处于活动状态（未 commit 或 rollback）,`deinit()` MUST 自动回滚事务。
+
+**ID**: TXM-008 | **Priority**: P0 | **Source**: PRD AC2.4.5 (补充)
 
 #### Scenario: deinit 自动回滚未提交事务
 ```zig
@@ -263,11 +258,10 @@ try std.testing.expect(users.items.len == 0);
 ---
 
 ### Requirement: 完整事务示例
-**ID**: TXM-009
-**Priority**: P0
-**Source**: PRD AC2.4.8
 
-ZORM SHALL 支持符合 PRD 示例的完整事务使用场景。
+ZORM MUST 支持符合 PRD 示例的完整事务使用场景。
+
+**ID**: TXM-009 | **Priority**: P0 | **Source**: PRD AC2.4.8
 
 #### Scenario: 用户和文章关联插入
 ```zig

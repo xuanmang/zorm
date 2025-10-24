@@ -4,14 +4,16 @@
 **Status**: Implemented
 **Related**: PRD Story 2.5
 
-## ADDED Requirements
+## Purpose
+ZORM 事务隔离级别管理,支持四个标准 SQL 隔离级别(READ UNCOMMITTED, READ COMMITTED, REPEATABLE READ, SERIALIZABLE),允许开发者根据业务需求选择合适的隔离级别,平衡数据一致性和性能。
+
+## Requirements
 
 ### Requirement: IsolationLevel 枚举定义
-**ID**: TXI-001
-**Priority**: P0
-**Source**: PRD AC2.5.1
 
 ZORM MUST 定义 `IsolationLevel` 枚举,包含四个标准 SQL 隔离级别。
+
+**ID**: TXI-001 | **Priority**: P0 | **Source**: PRD AC2.5.1
 
 #### Scenario: 枚举值定义正确
 ```zig
@@ -36,11 +38,10 @@ try std.testing.expectEqualStrings("SERIALIZABLE", IsolationLevel.serializable.t
 ---
 
 ### Requirement: TxOptions 包含 isolation_level
-**ID**: TXI-002
-**Priority**: P0
-**Source**: PRD AC2.5.2
 
 `db.beginTx()` MUST 接受可选的 `TxOptions` 参数,包含 `isolation_level` 字段。
+
+**ID**: TXI-002 | **Priority**: P0 | **Source**: PRD AC2.5.2
 
 #### Scenario: TxOptions 默认值
 ```zig
@@ -66,11 +67,10 @@ try std.testing.expectEqual(IsolationLevel.serializable, tx.isolation_level.?);
 ---
 
 ### Requirement: 默认隔离级别
-**ID**: TXI-003
-**Priority**: P1
-**Source**: PRD AC2.5.3
 
-ZORM SHALL 默认使用 PostgreSQL 的默认隔离级别（read_committed）。
+ZORM MUST 默认使用 PostgreSQL 的默认隔离级别（read_committed）。
+
+**ID**: TXI-003 | **Priority**: P1 | **Source**: PRD AC2.5.3
 
 #### Scenario: 未指定隔离级别时使用默认值
 ```zig
@@ -97,11 +97,10 @@ defer query.deinit();
 ---
 
 ### Requirement: 事务开始时设置隔离级别
-**ID**: TXI-004
-**Priority**: P0
-**Source**: PRD AC2.5.4
 
 ZORM MUST 在事务开始时执行 `SET TRANSACTION ISOLATION LEVEL` 语句。
+
+**ID**: TXI-004 | **Priority**: P0 | **Source**: PRD AC2.5.4
 
 #### Scenario: 执行 SET TRANSACTION ISOLATION LEVEL
 ```zig
@@ -140,11 +139,10 @@ try std.testing.expectEqualStrings("repeatable read", results.items[0].level);
 ---
 
 ### Requirement: 完整隔离级别示例
-**ID**: TXI-005
-**Priority**: P0
-**Source**: PRD AC2.5.5
 
-ZORM SHALL 支持符合 PRD 示例的完整隔离级别配置场景。
+ZORM MUST 支持符合 PRD 示例的完整隔离级别配置场景。
+
+**ID**: TXI-005 | **Priority**: P0 | **Source**: PRD AC2.5.5
 
 #### Scenario: serializable 隔离级别事务
 ```zig
@@ -198,11 +196,10 @@ try tx.commit();
 ---
 
 ### Requirement: 隔离级别文档说明
-**ID**: TXI-006
-**Priority**: P1
-**Source**: PRD Story 2.5 补充
 
 IsolationLevel 枚举 MUST 提供详细的文档注释,说明每个级别的特性和适用场景。
+
+**ID**: TXI-006 | **Priority**: P1 | **Source**: PRD Story 2.5 补充
 
 #### Scenario: 文档注释包含关键信息
 ```zig

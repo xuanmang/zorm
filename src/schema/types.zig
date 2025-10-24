@@ -79,9 +79,20 @@ pub fn zigToSQLType(comptime T: type) SQLType {
 
     return switch (type_info) {
         .int => |int_info| {
-            if (int_info.bits <= 16) return .smallint;
-            if (int_info.bits <= 32) return .integer;
-            return .bigint;
+            // 按照 PRD AC3.1.3 的映射规则:
+            // - i8, i16, i32 → SMALLINT
+            // - i64 → BIGINT
+            // - u8, u16, u32 → INTEGER
+            // - u64 → BIGINT
+            if (int_info.signedness == .signed) {
+                // 有符号整数
+                if (int_info.bits <= 32) return .smallint; // i8, i16, i32
+                return .bigint; // i64
+            } else {
+                // 无符号整数
+                if (int_info.bits <= 32) return .integer; // u8, u16, u32
+                return .bigint; // u64
+            }
         },
         .float => |float_info| {
             if (float_info.bits <= 32) return .real;
@@ -138,16 +149,29 @@ pub fn optionalChild(comptime T: type) type {
 test "zigToSQLType" {
     const testing = std.testing;
 
+    // 有符号整数 (AC3.1.3: i8, i16, i32 → SMALLINT; i64 → BIGINT)
+    try testing.expectEqual(SQLType.smallint, zigToSQLType(i8));
     try testing.expectEqual(SQLType.smallint, zigToSQLType(i16));
-    try testing.expectEqual(SQLType.integer, zigToSQLType(i32));
+    try testing.expectEqual(SQLType.smallint, zigToSQLType(i32));
     try testing.expectEqual(SQLType.bigint, zigToSQLType(i64));
+
+    // 无符号整数 (AC3.1.3: u8, u16, u32 → INTEGER; u64 → BIGINT)
+    try testing.expectEqual(SQLType.integer, zigToSQLType(u8));
+    try testing.expectEqual(SQLType.integer, zigToSQLType(u16));
+    try testing.expectEqual(SQLType.integer, zigToSQLType(u32));
+    try testing.expectEqual(SQLType.bigint, zigToSQLType(u64));
+
+    // 浮点数
     try testing.expectEqual(SQLType.real, zigToSQLType(f32));
     try testing.expectEqual(SQLType.double, zigToSQLType(f64));
+
+    // 布尔和文本
     try testing.expectEqual(SQLType.boolean, zigToSQLType(bool));
     try testing.expectEqual(SQLType.text, zigToSQLType([]const u8));
 
-    // Optional types
+    // 可选类型
     try testing.expectEqual(SQLType.bigint, zigToSQLType(?i64));
+    try testing.expectEqual(SQLType.integer, zigToSQLType(?u32));
     try testing.expectEqual(SQLType.text, zigToSQLType(?[]const u8));
 }
 

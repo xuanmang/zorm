@@ -83,4 +83,22 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // Schema 示例程序
+    const schema_example_module = b.createModule(.{
+        .root_source_file = b.path("examples/schema.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    schema_example_module.addImport("zorm", zorm_module);
+
+    const schema_example = b.addExecutable(.{
+        .name = "schema-example",
+        .root_module = schema_example_module,
+    });
+
+    const run_schema_example = b.addRunArtifact(schema_example);
+    const schema_example_step = b.step("run-example-schema", "Run schema management example");
+    schema_example_step.dependOn(&run_schema_example.step);
 }

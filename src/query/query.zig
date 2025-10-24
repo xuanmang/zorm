@@ -2125,12 +2125,47 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
 /// 提供声明式 API 构建和执行 CREATE TABLE DDL 语句。
 /// 封装 Table 结构，提供链式 API 和数据库方言支持。
 ///
-/// ## 参数
-/// - dialect: 数据库方言 (编译时确定)
+/// ## 特性
+/// - **自动类型映射**: 从 Zig struct 字段自动推断 PostgreSQL 类型
+/// - **主键检测**: 字段名为 `id` 自动设置为主键
+/// - **可选类型支持**: `?T` 类型自动省略 NOT NULL 约束
+/// - **IF NOT EXISTS**: 支持条件创建，避免重复创建错误
 ///
-/// ## 示例
+/// ## 类型映射 (AC3.1.3)
+/// | Zig Type | PostgreSQL Type | 说明 |
+/// |----------|----------------|------|
+/// | i8, i16, i32 | SMALLINT | 有符号小整数 |
+/// | i64 | BIGINT | 有符号大整数 |
+/// | u8, u16, u32 | INTEGER | 无符号整数 |
+/// | u64 | BIGINT | 无符号大整数 |
+/// | f32 | REAL | 单精度浮点 |
+/// | f64 | DOUBLE PRECISION | 双精度浮点 |
+/// | bool | BOOLEAN | 布尔值 |
+/// | []const u8 | TEXT | 文本字符串 |
+/// | ?T | 对应类型 + NULL | 可选类型 |
+///
+/// ## 参数
+/// - T: 模型类型 (comptime)
+/// - dialect: 数据库方言 (comptime)
+///
+/// ## 示例：自动模式
 /// ```zig
-/// var query = try db.newCreateTable("users");
+/// const User = struct {
+///     id: i64,              // PRIMARY KEY, BIGINT NOT NULL
+///     name: []const u8,     // TEXT NOT NULL
+///     email: ?[]const u8,   // TEXT (可选，允许 NULL)
+///     age: u32,             // INTEGER NOT NULL
+///     pub const table_name = "users";
+/// };
+///
+/// var query = try db.newCreateTable(User);
+/// defer query.deinit();
+/// try query.ifNotExists().exec();
+/// ```
+///
+/// ## 示例：手动模式
+/// ```zig
+/// var query = try db.newCreateTableEmpty(User);
 /// defer query.deinit();
 ///
 /// try query.ifNotExists()
@@ -4427,6 +4462,304 @@ test "CreateTableQuery: 复合主键" {
     // 复合主键应该单独声明
     try std.testing.expect(std.mem.indexOf(u8, sql, "PRIMARY KEY (user_id, role_id)") != null);
 }
+
+// ============================================
+// Task 2: 类型映射单元测试 (AC3.1.3)
+// ============================================
+
+test "CreateTableQuery: 类型映射 - 有符号整数" {
+    // 测试 AC3.1.3: i8, i16, i32 → SMALLINT; i64 → BIGINT
+    const TestTypes = struct {
+        field_i8: i8,
+        field_i16: i16,
+        field_i32: i32,
+        field_i64: i64,
+
+        pub const table_name = "test_signed_ints";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTypes, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证类型映射
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_i8 SMALLINT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_i16 SMALLINT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_i32 SMALLINT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_i64 BIGINT") != null);
+}
+
+test "CreateTableQuery: 类型映射 - 无符号整数" {
+    // 测试 AC3.1.3: u8, u16, u32 → INTEGER; u64 → BIGINT
+    const TestTypes = struct {
+        field_u8: u8,
+        field_u16: u16,
+        field_u32: u32,
+        field_u64: u64,
+
+        pub const table_name = "test_unsigned_ints";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTypes, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证类型映射
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_u8 INTEGER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_u16 INTEGER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_u32 INTEGER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_u64 BIGINT") != null);
+}
+
+test "CreateTableQuery: 类型映射 - 浮点数" {
+    // 测试 AC3.1.3: f32 → REAL; f64 → DOUBLE PRECISION
+    const TestTypes = struct {
+        field_f32: f32,
+        field_f64: f64,
+
+        pub const table_name = "test_floats";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTypes, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证类型映射
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_f32 REAL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_f64 DOUBLE PRECISION") != null);
+}
+
+test "CreateTableQuery: 类型映射 - 布尔和文本" {
+    // 测试 AC3.1.3: bool → BOOLEAN; []const u8 → TEXT
+    const TestTypes = struct {
+        field_bool: bool,
+        field_text: []const u8,
+
+        pub const table_name = "test_bool_text";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTypes, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证类型映射
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_bool BOOLEAN") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "field_text TEXT") != null);
+}
+
+test "CreateTableQuery: 类型映射 - 可选类型" {
+    // 测试 AC3.1.3: ?T → 对应类型 + NULL 允许
+    const TestTypes = struct {
+        id: i64, // 非可选
+        optional_i64: ?i64,
+        optional_u32: ?u32,
+        optional_text: ?[]const u8,
+        optional_bool: ?bool,
+
+        pub const table_name = "test_optional_types";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTypes, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证可选类型映射（不应该有 NOT NULL）
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_i64 BIGINT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_i64 BIGINT NOT NULL") == null);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_u32 INTEGER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_u32 INTEGER NOT NULL") == null);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_text TEXT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_text TEXT NOT NULL") == null);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_bool BOOLEAN") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_bool BOOLEAN NOT NULL") == null);
+
+    // 验证非可选字段有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+}
+
+test "CreateTableQuery: 类型映射 - 完整示例" {
+    // 测试 PRD 中的完整示例
+    const TestUser = struct {
+        id: i64, // PRIMARY KEY, BIGINT NOT NULL
+        name: []const u8, // TEXT NOT NULL
+        email: []const u8, // TEXT NOT NULL
+        age: u32, // INTEGER NOT NULL
+        score: f64, // DOUBLE PRECISION NOT NULL
+        is_active: bool, // BOOLEAN NOT NULL
+        bio: ?[]const u8, // TEXT (可选)
+
+        pub const table_name = "users";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestUser, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证完整的类型映射
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "age INTEGER NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "score DOUBLE PRECISION NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "is_active BOOLEAN NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "bio TEXT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "bio TEXT NOT NULL") == null);
+}
+
+// ============================================
+// Task 4: 主键检测单元测试 (AC3.1.4)
+// ============================================
+
+test "CreateTableQuery: 主键检测 - id 字段自动设置为主键" {
+    // 测试 AC3.1.4: 字段名为 id 自动设置为主键
+    const TestTable = struct {
+        id: i64,
+        name: []const u8,
+
+        pub const table_name = "test_auto_pk";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证 id 字段有 PRIMARY KEY
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY") != null);
+    // 验证 name 字段没有 PRIMARY KEY
+    try std.testing.expect(std.mem.indexOf(u8, sql, "name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT PRIMARY KEY") == null);
+}
+
+test "CreateTableQuery: 主键检测 - 主键字段自动添加 NOT NULL" {
+    // 测试 AC3.1.4: 主键字段自动添加 NOT NULL 约束
+    const TestTable = struct {
+        id: i64,
+        other: []const u8,
+
+        pub const table_name = "test_pk_not_null";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证主键字段有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+}
+
+test "CreateTableQuery: 主键检测 - 非 id 字段不自动设置主键" {
+    // 测试 AC3.1.4: 非 id 字段不自动设置主键
+    const TestTable = struct {
+        user_id: i64,
+        name: []const u8,
+
+        pub const table_name = "test_no_auto_pk";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证没有 PRIMARY KEY
+    try std.testing.expect(std.mem.indexOf(u8, sql, "PRIMARY KEY") == null);
+    // 验证仍然有 NOT NULL (非可选字段)
+    try std.testing.expect(std.mem.indexOf(u8, sql, "user_id BIGINT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT NOT NULL") != null);
+}
+
+// ============================================
+// Task 6: 可选类型处理单元测试 (AC3.1.5)
+// ============================================
+
+test "CreateTableQuery: 可选类型 - 数值类型" {
+    // 测试 AC3.1.5: ?T 自动省略 NOT NULL 约束
+    const TestTable = struct {
+        required_i64: i64,
+        optional_i64: ?i64,
+        required_u32: u32,
+        optional_u32: ?u32,
+
+        pub const table_name = "test_optional_numbers";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证必填字段有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "required_i64 BIGINT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "required_u32 INTEGER NOT NULL") != null);
+
+    // 验证可选字段没有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_i64 BIGINT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_i64 BIGINT NOT NULL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_u32 INTEGER") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_u32 INTEGER NOT NULL") == null);
+}
+
+test "CreateTableQuery: 可选类型 - 文本和布尔类型" {
+    // 测试 AC3.1.5: 可选文本和布尔类型
+    const TestTable = struct {
+        id: i64,
+        required_text: []const u8,
+        optional_text: ?[]const u8,
+        required_bool: bool,
+        optional_bool: ?bool,
+
+        pub const table_name = "test_optional_misc";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证必填字段有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "required_text TEXT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "required_bool BOOLEAN NOT NULL") != null);
+
+    // 验证可选字段没有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_text TEXT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_text TEXT NOT NULL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_bool BOOLEAN") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "optional_bool BOOLEAN NOT NULL") == null);
+}
+
+test "CreateTableQuery: 可选类型 - 混合字段" {
+    // 测试 AC3.1.5: 混合可选和非可选字段
+    const TestTable = struct {
+        id: i64, // 主键,非可选
+        name: []const u8, // 非可选
+        email: ?[]const u8, // 可选
+        age: u32, // 非可选
+        bio: ?[]const u8, // 可选
+
+        pub const table_name = "test_mixed_optional";
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证所有非可选字段有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "age INTEGER NOT NULL") != null);
+
+    // 验证所有可选字段没有 NOT NULL
+    try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT NOT NULL") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "bio TEXT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "bio TEXT NOT NULL") == null);
+}
+
+// ============================================
+// Task 7: ifNotExists 功能验证
+// ============================================
+// 注意：已有测试 "CreateTableQuery: IF NOT EXISTS" 在第 4341 行,因此这里不需要重复
 
 // ============================================
 // 新增测试：SELECT 查询构建器完善功能

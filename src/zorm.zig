@@ -66,6 +66,9 @@ pub const schema = struct {
     pub const generateColumnDefinition = @import("schema/schema.zig").generateColumnDefinition;
     pub const generateColumnDefinitions = @import("schema/schema.zig").generateColumnDefinitions;
 };
+
+// Reflection utilities for CREATE TABLE API
+pub const reflection = @import("schema/reflection.zig");
 pub const driver = struct {
     pub const postgres = @import("driver/postgres.zig");
     pub const connection = @import("driver/connection.zig");

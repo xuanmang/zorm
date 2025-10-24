@@ -205,7 +205,7 @@ test "generateCreateTableSQL" {
         id: i64,
         name: []const u8,
         email: ?[]const u8,
-        age: i32,
+        age: u32, // 使用 u32 以映射到 INTEGER (符合 PRD AC3.1.3)
         is_active: bool,
 
         pub const table_name = "users";

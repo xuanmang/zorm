@@ -2438,7 +2438,7 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 执行 DROP TABLE 语句
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build(null);
+            const query_str = try self.build();
             defer self.allocator.free(query_str);
 
             try self.db.exec(query_str, &.{});
@@ -4576,8 +4576,8 @@ test "CreateTableQuery: 类型映射 - 可选类型" {
     try std.testing.expect(std.mem.indexOf(u8, sql, "optional_bool BOOLEAN") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "optional_bool BOOLEAN NOT NULL") == null);
 
-    // 验证非可选字段有 NOT NULL
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    // 验证非可选字段有 NOT NULL（自增主键使用 BIGSERIAL）
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
 }
 
 test "CreateTableQuery: 类型映射 - 完整示例" {
@@ -4600,7 +4600,7 @@ test "CreateTableQuery: 类型映射 - 完整示例" {
 
     // 验证完整的类型映射
     try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT NOT NULL") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT NOT NULL") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "age INTEGER NOT NULL") != null);
@@ -4627,8 +4627,8 @@ test "CreateTableQuery: 主键检测 - id 字段自动设置为主键" {
     const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
     defer allocator.free(sql);
 
-    // 验证 id 字段有 PRIMARY KEY
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY") != null);
+    // 验证 id 字段有 PRIMARY KEY（自增主键使用 BIGSERIAL）
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
     // 验证 name 字段没有 PRIMARY KEY
     try std.testing.expect(std.mem.indexOf(u8, sql, "name") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT PRIMARY KEY") == null);
@@ -4647,8 +4647,8 @@ test "CreateTableQuery: 主键检测 - 主键字段自动添加 NOT NULL" {
     const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
     defer allocator.free(sql);
 
-    // 验证主键字段有 NOT NULL
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    // 验证主键字段有 NOT NULL（自增主键使用 BIGSERIAL）
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
 }
 
 test "CreateTableQuery: 主键检测 - 非 id 字段不自动设置主键" {
@@ -4744,8 +4744,8 @@ test "CreateTableQuery: 可选类型 - 混合字段" {
     const sql = try @import("../schema/reflection.zig").generateCreateTableSQL(TestTable, .postgresql, allocator);
     defer allocator.free(sql);
 
-    // 验证所有非可选字段有 NOT NULL
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    // 验证所有非可选字段有 NOT NULL（自增主键使用 BIGSERIAL）
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT NOT NULL") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "age INTEGER NOT NULL") != null);
 
@@ -5398,4 +5398,298 @@ test "RawQuery: 零值参数" {
         .float => |val| try std.testing.expectEqual(@as(f64, 0.0), val),
         else => try std.testing.expect(false),
     }
+}
+
+// ===== DropTableQuery 测试 =====
+
+test "DropTableQuery: 创建查询构建器" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    try std.testing.expect(query.allocator.ptr == std.testing.allocator.ptr);
+    try std.testing.expectEqualStrings("users", query.table_name);
+}
+
+test "DropTableQuery: 自动提取表名" {
+    const TestUser = struct {
+        pub const table_name = "custom_users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    try std.testing.expectEqualStrings("custom_users", query.table_name);
+}
+
+test "DropTableQuery: 表名未定义时使用类型名" {
+    const Product = struct {
+        id: i64,
+        name: []const u8,
+        // 未定义 table_name，应使用 "Product"
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(Product, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    // @typeName 返回完整的类型名,包括模块路径,所以我们只检查是否包含 "Product"
+    try std.testing.expect(std.mem.indexOf(u8, query.table_name, "Product") != null);
+}
+
+test "DropTableQuery: 添加 IF EXISTS 子句" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    _ = query.ifExists();
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DROP TABLE IF EXISTS users") != null);
+}
+
+test "DropTableQuery: 链式调用支持" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    const sql = try query.ifExists().build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "IF EXISTS") != null);
+}
+
+test "DropTableQuery: 添加 CASCADE 选项" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    _ = query.cascade();
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DROP TABLE users CASCADE") != null);
+}
+
+test "DropTableQuery: CASCADE 与 IF EXISTS 组合" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    const sql = try query.ifExists().cascade().build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DROP TABLE IF EXISTS users CASCADE") != null);
+}
+
+test "DropTableQuery: 添加 RESTRICT 选项" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    _ = query.restrict();
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DROP TABLE users RESTRICT") != null);
+}
+
+test "DropTableQuery: RESTRICT 与 IF EXISTS 组合" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    const sql = try query.ifExists().restrict().build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DROP TABLE IF EXISTS users RESTRICT") != null);
+}
+
+test "DropTableQuery: CASCADE 覆盖 RESTRICT" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    _ = query.restrict();
+    _ = query.cascade(); // 应覆盖 restrict
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CASCADE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "RESTRICT") == null);
+}
+
+test "DropTableQuery: RESTRICT 覆盖 CASCADE" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    _ = query.cascade();
+    _ = query.restrict(); // 应覆盖 cascade
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expect(std.mem.indexOf(u8, sql, "RESTRICT") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CASCADE") == null);
+}
+
+test "DropTableQuery: 默认行为（无 CASCADE 或 RESTRICT）" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    // 默认情况下不应包含 CASCADE 或 RESTRICT
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CASCADE") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "RESTRICT") == null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DROP TABLE users") != null);
+}
+
+test "DropTableQuery: 生成基本 DROP TABLE SQL" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    const sql = try query.build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DROP TABLE users", sql);
+}
+
+test "DropTableQuery: 生成带所有选项的 SQL" {
+    const TestUser = struct {
+        pub const table_name = "users";
+    };
+
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try DropTableQuery(TestUser, .postgresql).init(std.testing.allocator, @ptrCast(&db));
+    defer query.deinit();
+
+    const sql = try query.ifExists().cascade().build();
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("DROP TABLE IF EXISTS users CASCADE", sql);
 }

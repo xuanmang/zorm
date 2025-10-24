@@ -84,6 +84,59 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
 
+    // 添加 CREATE INDEX 测试
+    const create_index_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/create_index_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    create_index_test_module.addOptions("build_options", options);
+    create_index_test_module.addImport("pg", pg_dep.module("pg"));
+    create_index_test_module.addImport("zorm", zorm_module);
+
+    const create_index_tests = b.addTest(.{
+        .root_module = create_index_test_module,
+    });
+
+    const run_create_index_tests = b.addRunArtifact(create_index_tests);
+    test_step.dependOn(&run_create_index_tests.step);
+
+    // 添加 DROP INDEX 测试
+    const drop_index_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/drop_index_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    drop_index_test_module.addOptions("build_options", options);
+    drop_index_test_module.addImport("pg", pg_dep.module("pg"));
+    drop_index_test_module.addImport("zorm", zorm_module);
+
+    const drop_index_tests = b.addTest(.{
+        .root_module = drop_index_test_module,
+    });
+
+    const run_drop_index_tests = b.addRunArtifact(drop_index_tests);
+    test_step.dependOn(&run_drop_index_tests.step);
+
+    // 添加 PostgreSQL 特定类型集成测试
+    const pg_types_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/postgresql_types_integration_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // 添加必要的模块导入
+    pg_types_test_module.addImport("zorm", zorm_module);
+
+    const pg_types_tests = b.addTest(.{
+        .root_module = pg_types_test_module,
+    });
+
+    const run_pg_types_tests = b.addRunArtifact(pg_types_tests);
+    test_step.dependOn(&run_pg_types_tests.step);
+
     // Schema 示例程序
     const schema_example_module = b.createModule(.{
         .root_source_file = b.path("examples/schema.zig"),

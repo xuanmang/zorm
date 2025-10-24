@@ -406,6 +406,28 @@ fn escapeString(buf: *std.ArrayList(u8), str: []const u8, allocator: std.mem.All
     }
 }
 
+/// PostgreSQL 数组字符串反转义辅助函数
+/// 将 PostgreSQL 数组中的转义字符还原: \" -> ", \\ -> \
+fn unescapeString(str: []const u8, allocator: std.mem.Allocator) ![]const u8 {
+    var result: std.ArrayList(u8) = .{};
+    errdefer result.deinit(allocator);
+
+    var i: usize = 0;
+    while (i < str.len) : (i += 1) {
+        if (str[i] == '\\' and i + 1 < str.len) {
+            const next_ch = str[i + 1];
+            if (next_ch == '"' or next_ch == '\\') {
+                try result.append(allocator, next_ch);
+                i += 1; // 跳过转义字符
+                continue;
+            }
+        }
+        try result.append(allocator, str[i]);
+    }
+
+    return result.toOwnedSlice(allocator);
+}
+
 /// 序列化单个数组元素
 fn serializeElement(buf: *std.ArrayList(u8), item: anytype, allocator: std.mem.Allocator) !void {
     const T = @TypeOf(item);
@@ -515,8 +537,8 @@ pub fn deserializeArray(comptime T: type, pg_array_str: []const u8, allocator: s
             if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
                 value = value[1 .. value.len - 1];
             }
-            // TODO: 处理反斜杠转义
-            const duped = try allocator.dupe(u8, value);
+            // 处理反斜杠转义: \" -> ", \\ -> \
+            const duped = try unescapeString(value, allocator);
             if (is_optional) {
                 try result.append(allocator, duped);
             } else {

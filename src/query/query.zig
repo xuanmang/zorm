@@ -778,10 +778,15 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         columns: std.ArrayList([]const u8),
         values_list: std.ArrayList([]const QueryArg),
         returning_columns: ?[]const []const u8,
-        on_conflict: ?OnConflictClause,
         on_duplicate_key: ?OnDuplicateKeyUpdate,
         /// 存储序列化后的数组/UUID/JSONB 字符串,确保生命周期管理
         serialized_values: std.ArrayList([]const u8),
+
+        // ON CONFLICT 链式 API 状态字段
+        conflict_target: ?[]const []const u8 = null,
+        conflict_action: ?ConflictAction = null,
+        conflict_updates: ?[]const u8 = null,
+        conflict_where: ?[]const u8 = null,
 
         /// 初始化插入查询构建器
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
@@ -795,7 +800,6 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 .columns = .{},
                 .values_list = .{},
                 .returning_columns = null,
-                .on_conflict = null,
                 .on_duplicate_key = null,
                 .serialized_values = .{},
             };
@@ -1005,28 +1009,6 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             return self;
         }
 
-        /// 添加 ON CONFLICT 子句 (仅 PostgreSQL 和 SQLite 支持)
-        ///
-        /// ## 参数
-        /// - clause: ON CONFLICT 子句配置
-        ///
-        /// ## 示例
-        /// ```zig
-        /// try query.onConflict(.{
-        ///     .columns = &.{"email"},
-        ///     .action = .do_update,
-        ///     .update_columns = &.{"name", "updated_at"},
-        /// });
-        /// ```
-        pub fn onConflict(self: *Self, clause: OnConflictClause) !*Self {
-            // 编译时检查方言是否支持 ON CONFLICT
-            if (comptime !dialect.supportsOnConflict()) {
-                @compileError("ON CONFLICT is not supported by " ++ @tagName(dialect));
-            }
-
-            self.on_conflict = clause;
-            return self;
-        }
 
         /// 添加 ON DUPLICATE KEY UPDATE 子句 (仅 MySQL 支持)
         ///
@@ -1046,6 +1028,143 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             self.on_duplicate_key = update;
+            return self;
+        }
+
+        // ==================== 新的链式 ON CONFLICT API ====================
+
+        /// 指定冲突检测的列 (新链式 API)
+        ///
+        /// ## 参数
+        /// - columns: 冲突列名数组 (如 &.{"email"} 或 &.{"user_id", "project_id"})
+        ///
+        /// ## 返回值
+        /// - `*Self`: 返回自身指针,支持链式调用
+        ///
+        /// ## 错误
+        /// - `EmptyConflictTarget`: 列数组为空
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = try query.onConflict(&.{"email"});
+        /// ```
+        ///
+        /// ## 注意
+        /// - 必须在 doNothing() 或 doUpdate() 之前调用
+        /// - 只支持 PostgreSQL 方言 (编译时检查)
+        pub fn onConflict(self: *Self, columns: []const []const u8) !*Self {
+            // 编译时检查方言是否支持 ON CONFLICT
+            if (comptime !dialect.supportsOnConflict()) {
+                @compileError("ON CONFLICT is not supported by " ++ @tagName(dialect));
+            }
+
+            if (columns.len == 0) {
+                return error.EmptyConflictTarget;
+            }
+
+            self.conflict_target = columns;
+            return self;
+        }
+
+        /// 冲突时不执行任何操作 (DO NOTHING)
+        ///
+        /// ## 返回值
+        /// - `*Self`: 返回自身指针,支持链式调用
+        ///
+        /// ## 错误
+        /// - `ConflictTargetNotSet`: 未调用 onConflict() 设置冲突目标
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = try query
+        ///     .onConflict(&.{"email"})
+        ///     .doNothing();
+        /// ```
+        ///
+        /// ## 注意
+        /// - 必须先调用 onConflict() 指定冲突目标
+        pub fn doNothing(self: *Self) !*Self {
+            if (self.conflict_target == null) {
+                return error.ConflictTargetNotSet;
+            }
+
+            self.conflict_action = .do_nothing;
+            return self;
+        }
+
+        /// 冲突时更新指定列 (DO UPDATE SET ...)
+        ///
+        /// ## 参数
+        /// - assignments: SQL SET 表达式字符串,支持 EXCLUDED 关键字
+        ///   示例: "name = EXCLUDED.name, age = EXCLUDED.age"
+        ///
+        /// ## 返回值
+        /// - `*Self`: 返回自身指针,支持链式调用
+        ///
+        /// ## 错误
+        /// - `ConflictTargetNotSet`: 未调用 onConflict() 设置冲突目标
+        /// - `EmptyUpdateAssignments`: 更新表达式为空
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = try query
+        ///     .onConflict(&.{"email"})
+        ///     .doUpdate("name = EXCLUDED.name, updated_at = CURRENT_TIMESTAMP");
+        /// ```
+        ///
+        /// ## 注意
+        /// - 必须先调用 onConflict() 指定冲突目标
+        /// - 支持 EXCLUDED 关键字引用新值
+        /// - 支持 SQL 函数调用 (如 CURRENT_TIMESTAMP)
+        pub fn doUpdate(self: *Self, assignments: []const u8) !*Self {
+            if (self.conflict_target == null) {
+                return error.ConflictTargetNotSet;
+            }
+
+            if (assignments.len == 0) {
+                return error.EmptyUpdateAssignments;
+            }
+
+            self.conflict_action = .do_update;
+            self.conflict_updates = assignments;
+            return self;
+        }
+
+        /// 指定部分唯一索引的 WHERE 条件
+        ///
+        /// ## 参数
+        /// - condition: SQL WHERE 条件表达式
+        ///   示例: "active = true" 或 "deleted_at IS NULL"
+        ///
+        /// ## 返回值
+        /// - `*Self`: 返回自身指针,支持链式调用
+        ///
+        /// ## 错误
+        /// - `ConflictTargetNotSet`: 未调用 onConflict() 设置冲突目标
+        /// - `EmptyWhereCondition`: WHERE 条件为空
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = try query
+        ///     .onConflict(&.{"email"})
+        ///     .whereConflict("deleted_at IS NULL")
+        ///     .doUpdate("name = EXCLUDED.name");
+        /// ```
+        ///
+        /// ## 注意
+        /// - 仅在使用部分唯一索引时需要
+        /// - 必须先调用 onConflict() 指定冲突目标
+        /// - 条件表达式由用户保证正确性
+        pub fn whereConflict(self: *Self, condition: []const u8) !*Self {
+            if (self.conflict_target == null) {
+                return error.ConflictTargetNotSet;
+            }
+
+            if (condition.len == 0) {
+                return error.EmptyWhereCondition;
+            }
+
+            self.conflict_where = condition;
             return self;
         }
 
@@ -1106,31 +1225,42 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 try buf.appendSlice(allocator, ")");
             }
 
-            // ON CONFLICT (PostgreSQL/SQLite)
-            if (self.on_conflict) |conflict| {
-                try buf.appendSlice(allocator, " ON CONFLICT");
-
-                if (conflict.columns) |cols| {
-                    try buf.appendSlice(allocator, " (");
-                    for (cols, 0..) |col, i| {
-                        if (i > 0) try buf.appendSlice(allocator, ", ");
-                        try buf.appendSlice(allocator, col);
-                    }
-                    try buf.appendSlice(allocator, ")");
+            // ON CONFLICT (PostgreSQL/SQLite) - 优先使用新链式 API
+            if (self.conflict_target) |columns| {
+                // 验证配置完整性
+                if (self.conflict_action == null) {
+                    return error.ConflictActionNotSet;
                 }
 
-                try buf.appendSlice(allocator, " ");
-                try buf.appendSlice(allocator, conflict.action.toSQL());
+                try buf.appendSlice(allocator, " ON CONFLICT (");
 
-                if (conflict.action == .do_update) {
-                    if (conflict.update_columns) |update_cols| {
-                        try buf.appendSlice(allocator, " SET ");
-                        for (update_cols, 0..) |col, i| {
-                            if (i > 0) try buf.appendSlice(allocator, ", ");
-                            try buf.appendSlice(allocator, col);
-                            try buf.appendSlice(allocator, " = EXCLUDED.");
-                            try buf.appendSlice(allocator, col);
-                        }
+                for (columns, 0..) |col, i| {
+                    if (i > 0) try buf.appendSlice(allocator, ", ");
+                    try buf.appendSlice(allocator, col);
+                }
+
+                try buf.appendSlice(allocator, ")");
+
+                // WHERE 条件 (部分唯一索引)
+                if (self.conflict_where) |where| {
+                    try buf.appendSlice(allocator, " WHERE ");
+                    try buf.appendSlice(allocator, where);
+                }
+
+                // 冲突动作
+                if (self.conflict_action) |action| {
+                    switch (action) {
+                        .do_nothing => {
+                            try buf.appendSlice(allocator, " DO NOTHING");
+                        },
+                        .do_update => {
+                            if (self.conflict_updates) |updates| {
+                                try buf.appendSlice(allocator, " DO UPDATE SET ");
+                                try buf.appendSlice(allocator, updates);
+                            } else {
+                                return error.UpdateAssignmentsNotSet;
+                            }
+                        },
                     }
                 }
             }
@@ -3532,12 +3662,7 @@ test "InsertQuery: ON CONFLICT DO NOTHING (PostgreSQL)" {
         .age = 25,
     });
 
-    const conflict_cols = [_][]const u8{"email"};
-    _ = try query.onConflict(.{
-        .columns = &conflict_cols,
-        .action = .do_nothing,
-        .update_columns = null,
-    });
+    _ = try (try query.onConflict(&.{"email"})).doNothing();
 
     const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
@@ -3561,13 +3686,7 @@ test "InsertQuery: ON CONFLICT DO UPDATE (PostgreSQL)" {
         .age = 25,
     });
 
-    const conflict_cols = [_][]const u8{"email"};
-    const update_cols = [_][]const u8{ "name", "age" };
-    _ = try query.onConflict(.{
-        .columns = &conflict_cols,
-        .action = .do_update,
-        .update_columns = &update_cols,
-    });
+    _ = try (try query.onConflict(&.{"email"})).doUpdate("name = EXCLUDED.name, age = EXCLUDED.age");
 
     const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
@@ -3595,15 +3714,7 @@ test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
 
     _ = try query.values(&users);
 
-    const conflict_cols = [_][]const u8{"email"};
-    const update_cols = [_][]const u8{"name"};
-    _ = try query.onConflict(.{
-        .columns = &conflict_cols,
-        .action = .do_update,
-        .update_columns = &update_cols,
-    });
-
-    _ = try query.returning(&.{"id"});
+    _ = try (try (try query.onConflict(&.{"email"})).doUpdate("name = EXCLUDED.name")).returning(&.{"id"});
 
     const sql = try query.build(null);
     defer std.testing.allocator.free(sql);
@@ -3611,6 +3722,176 @@ test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
     const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3), ($4, $5, $6) " ++
         "ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name " ++
         "RETURNING id";
+
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+
+test "InsertQuery: onConflict 空列名数组错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 测试空列名数组
+    const empty_cols: []const []const u8 = &.{};
+    try std.testing.expectError(error.EmptyConflictTarget, query.onConflict(empty_cols));
+}
+
+test "InsertQuery: doNothing 未调用 onConflict 错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 未调用 onConflict 就调用 doNothing
+    try std.testing.expectError(error.ConflictTargetNotSet, query.doNothing());
+}
+
+test "InsertQuery: doUpdate 未调用 onConflict 错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 未调用 onConflict 就调用 doUpdate
+    try std.testing.expectError(error.ConflictTargetNotSet, query.doUpdate("name = EXCLUDED.name"));
+}
+
+test "InsertQuery: doUpdate 空更新表达式错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 先调用 onConflict
+    _ = try query.onConflict(&.{"email"});
+
+    // 传入空字符串
+    try std.testing.expectError(error.EmptyUpdateAssignments, query.doUpdate(""));
+}
+
+test "InsertQuery: whereConflict 未调用 onConflict 错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 未调用 onConflict 就调用 whereConflict
+    try std.testing.expectError(error.ConflictTargetNotSet, query.whereConflict("active = true"));
+}
+
+test "InsertQuery: whereConflict 空条件错误" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    // 先调用 onConflict
+    _ = try query.onConflict(&.{"email"});
+
+    // 传入空字符串
+    try std.testing.expectError(error.EmptyWhereCondition, query.whereConflict(""));
+}
+
+test "InsertQuery: whereConflict 与 doUpdate 组合" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    _ = try (try (try query.onConflict(&.{"email"})).whereConflict("deleted_at IS NULL")).doUpdate("name = EXCLUDED.name");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) " ++
+        "ON CONFLICT (email) WHERE deleted_at IS NULL DO UPDATE SET name = EXCLUDED.name";
+
+    try std.testing.expectEqualStrings(expected, sql);
+}
+
+test "InsertQuery: 多列冲突目标" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    _ = try (try query.onConflict(&.{ "email", "name" })).doNothing();
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("INSERT INTO users (name, email, age) VALUES ($1, $2, $3) ON CONFLICT (email, name) DO NOTHING", sql);
+}
+
+test "InsertQuery: 复杂 SQL 表达式在 doUpdate" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try InsertQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.value(.{
+        .name = "Alice",
+        .email = "alice@example.com",
+        .age = 25,
+    });
+
+    _ = try (try query.onConflict(&.{"email"})).doUpdate("name = EXCLUDED.name, age = EXCLUDED.age + 1, updated_at = CURRENT_TIMESTAMP");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    const expected = "INSERT INTO users (name, email, age) VALUES ($1, $2, $3) " ++
+        "ON CONFLICT (email) DO UPDATE SET name = EXCLUDED.name, age = EXCLUDED.age + 1, updated_at = CURRENT_TIMESTAMP";
 
     try std.testing.expectEqualStrings(expected, sql);
 }

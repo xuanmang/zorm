@@ -2510,37 +2510,119 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 指定索引名称
+        ///
+        /// ## 参数
+        /// - `name`: 索引名称，建议使用 `idx_<table>_<column(s)>` 命名规范
+        ///
+        /// ## 返回值
+        /// 返回 self 指针以支持链式调用
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = query.index("idx_users_email");
+        /// ```
         pub fn index(self: *Self, name: []const u8) *Self {
             self.index_name = name;
             return self;
         }
 
         /// 添加索引列（支持列名和表达式）
-        /// 可多次调用以创建复合索引
+        ///
+        /// 可多次调用以创建复合索引。支持传入表达式（如 `LOWER(email)`）以创建表达式索引。
+        ///
+        /// ## 参数
+        /// - `col_name`: 列名或 SQL 表达式
+        ///
+        /// ## 返回值
+        /// 返回 self 指针以支持链式调用
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 单列索引
+        /// _ = try query.column("email");
+        ///
+        /// // 复合索引
+        /// _ = try query.column("email");
+        /// _ = try query.column("username");
+        ///
+        /// // 表达式索引
+        /// _ = try query.column("LOWER(email)");
+        /// ```
         pub fn column(self: *Self, col_name: []const u8) !*Self {
             try self.columns.append(self.allocator, col_name);
             return self;
         }
 
         /// 创建唯一索引
+        ///
+        /// 添加 UNIQUE 关键字，确保索引列的值唯一性
+        ///
+        /// ## 返回值
+        /// 返回 self 指针以支持链式调用
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = query.unique();  // 生成 CREATE UNIQUE INDEX ...
+        /// ```
         pub fn unique(self: *Self) *Self {
             self.unique_flag = true;
             return self;
         }
 
         /// 添加 IF NOT EXISTS 子句
+        ///
+        /// 如果索引已存在则跳过创建，避免重复创建错误
+        ///
+        /// ## 返回值
+        /// 返回 self 指针以支持链式调用
+        ///
+        /// ## 示例
+        /// ```zig
+        /// _ = query.ifNotExists();  // 生成 CREATE INDEX IF NOT EXISTS ...
+        /// ```
         pub fn ifNotExists(self: *Self) *Self {
             self.if_not_exists_flag = true;
             return self;
         }
 
         /// 添加部分索引条件（WHERE 子句）
+        ///
+        /// 创建部分索引，仅对满足条件的行建立索引，节省存储空间并提升性能
+        ///
+        /// ## 参数
+        /// - `condition`: WHERE 条件表达式（不包含 WHERE 关键字）
+        ///
+        /// ## 返回值
+        /// 返回 self 指针以支持链式调用
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 仅为非空 email 建立索引
+        /// _ = query.where("email IS NOT NULL");
+        ///
+        /// // 仅为活跃用户建立索引
+        /// _ = query.where("status = 'active'");
+        /// ```
         pub fn where(self: *Self, condition: []const u8) *Self {
             self.where_condition = condition;
             return self;
         }
 
         /// 构建 CREATE INDEX SQL 语句
+        ///
+        /// ## 返回值
+        /// 返回分配的 SQL 字符串，调用者负责释放内存
+        ///
+        /// ## 错误
+        /// - `error.IndexNameRequired`: 未设置索引名称
+        /// - `error.ColumnsRequired`: 未添加任何列
+        ///
+        /// ## 示例
+        /// ```zig
+        /// const sql = try query.build();
+        /// defer allocator.free(sql);
+        /// // SQL: "CREATE INDEX idx_users_email ON users (email)"
+        /// ```
         pub fn build(self: *Self) ![]const u8 {
             // 参数验证
             if (self.index_name == null) {
@@ -2589,8 +2671,20 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 执行 CREATE INDEX 语句
+        ///
+        /// 构建并执行 SQL，直接在数据库中创建索引
+        ///
+        /// ## 错误
+        /// - `error.IndexNameRequired`: 未设置索引名称
+        /// - `error.ColumnsRequired`: 未添加任何列
+        /// - 数据库执行错误（如索引已存在、列不存在等）
+        ///
+        /// ## 示例
+        /// ```zig
+        /// try query.exec();
+        /// ```
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build(null);
+            const query_str = try self.build();
             defer self.allocator.free(query_str);
 
             try self.db.exec(query_str, &.{});

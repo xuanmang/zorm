@@ -48,6 +48,18 @@ pub const ColumnType = enum {
     uuid,
     bytea,
 
+    // 数组类型
+    smallint_array,
+    int_array,
+    bigint_array,
+    float_array,
+    double_array,
+    boolean_array,
+    text_array,
+    timestamp_array,
+    uuid_array,
+    jsonb_array,
+
     /// 获取 SQL 类型名称 (PostgreSQL)
     pub fn sqlType(self: ColumnType, comptime dialect: dialect_module.Dialect) []const u8 {
         _ = dialect; // PostgreSQL 专用
@@ -68,6 +80,17 @@ pub const ColumnType = enum {
             .jsonb => "JSONB",
             .uuid => "UUID",
             .bytea => "BYTEA",
+            // 数组类型
+            .smallint_array => "SMALLINT[]",
+            .int_array => "INTEGER[]",
+            .bigint_array => "BIGINT[]",
+            .float_array => "REAL[]",
+            .double_array => "DOUBLE PRECISION[]",
+            .boolean_array => "BOOLEAN[]",
+            .text_array => "TEXT[]",
+            .timestamp_array => "TIMESTAMP[]",
+            .uuid_array => "UUID[]",
+            .jsonb_array => "JSONB[]",
         };
     }
 };
@@ -210,6 +233,62 @@ pub fn getFieldSchema(comptime T: type, comptime field_name: []const u8) FieldSc
     }
 
     return .{};
+}
+
+/// 检测字段是否为 JSONB 类型
+///
+/// 通过检查 schema 配置中的 sql_type 是否为 "JSONB" 来判断
+///
+/// ## 参数
+/// - `T`: 结构体类型
+/// - `field_name`: 字段名称
+///
+/// ## 返回值
+/// 如果字段配置为 JSONB 类型,返回 true,否则返回 false
+///
+/// ## 示例
+/// ```zig
+/// const Article = struct {
+///     id: i64,
+///     metadata: []const u8,
+///     pub const schema = .{
+///         .metadata = .{ .sql_type = "JSONB" },
+///     };
+/// };
+/// const is_jsonb = isJSONBField(Article, "metadata"); // true
+/// ```
+pub fn isJSONBField(comptime T: type, comptime field_name: []const u8) bool {
+    const schema_cfg = getFieldSchema(T, field_name);
+    if (schema_cfg.sql_type) |sql_type| {
+        return std.mem.eql(u8, sql_type, "JSONB");
+    }
+    return false;
+}
+
+/// 检测字段是否为 UUID 类型
+///
+/// 通过检查 Zig 类型是否为 [16]u8 来判断
+///
+/// ## 参数
+/// - `T`: 结构体类型
+/// - `field_name`: 字段名称
+///
+/// ## 返回值
+/// 如果字段类型为 [16]u8,返回 true,否则返回 false
+pub fn isUUIDField(comptime T: type, comptime field_name: []const u8) bool {
+    const fields = @typeInfo(T).@"struct".fields;
+    inline for (fields) |field| {
+        if (std.mem.eql(u8, field.name, field_name)) {
+            const field_type = field.type;
+            const type_info = @typeInfo(field_type);
+            if (type_info == .array) {
+                const arr_info = type_info.array;
+                return arr_info.len == 16 and arr_info.child == u8;
+            }
+            return false;
+        }
+    }
+    return false;
 }
 
 /// 生成单个列的定义 SQL
@@ -820,20 +899,22 @@ test "generateColumnDefinitions: 完整示例" {
 /// 生成的 SQL: `DROP INDEX IF EXISTS idx_users_email`
 pub fn DropIndexQuery(comptime T: type, comptime dialect: dialect_module.Dialect) type {
     _ = T; // 类型参数用于与其他 Query 保持一致,实际 DROP INDEX 不需要表名
-    _ = dialect; // 方言参数保持 API 一致性
+    const db_mod = @import("../core/db.zig");
+    const DBType = db_mod.DB(dialect);
 
     return struct {
         const Self = @This();
         const Allocator = std.mem.Allocator;
 
         allocator: Allocator,
-        db: *@import("../core/db.zig").DB,
+        db: *DBType,
         index_name: ?[]const u8,
         if_exists_flag: bool,
         cascade_flag: bool,
+        restrict_flag: bool,
 
         /// 初始化 DropIndexQuery
-        pub fn init(allocator: Allocator, db: *@import("../core/db.zig").DB) !*Self {
+        pub fn init(allocator: Allocator, db: *DBType) !*Self {
             const query = try allocator.create(Self);
             query.* = .{
                 .allocator = allocator,
@@ -841,6 +922,7 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: dialect_module.Dialect
                 .index_name = null,
                 .if_exists_flag = false,
                 .cascade_flag = false,
+                .restrict_flag = false,
             };
             return query;
         }
@@ -873,11 +955,27 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: dialect_module.Dialect
         ///
         /// 级联删除依赖于该索引的对象。
         /// 注意:PostgreSQL 中很少有对象依赖索引,此选项较少使用。
+        /// CASCADE 和 RESTRICT 互斥,后调用的会覆盖前面的。
         ///
         /// ## 返回值
         /// 返回 self 指针支持链式调用
         pub fn cascade(self: *Self) *Self {
             self.cascade_flag = true;
+            self.restrict_flag = false;
+            return self;
+        }
+
+        /// 添加 RESTRICT 选项
+        ///
+        /// 如果有对象依赖于该索引,则拒绝删除。
+        /// 这是默认行为,显式指定可以提高代码可读性。
+        /// CASCADE 和 RESTRICT 互斥,后调用的会覆盖前面的。
+        ///
+        /// ## 返回值
+        /// 返回 self 指针支持链式调用
+        pub fn restrict(self: *Self) *Self {
+            self.restrict_flag = true;
+            self.cascade_flag = false;
             return self;
         }
 
@@ -907,6 +1005,8 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: dialect_module.Dialect
 
             if (self.cascade_flag) {
                 try sql_buf.appendSlice(self.allocator, " CASCADE");
+            } else if (self.restrict_flag) {
+                try sql_buf.appendSlice(self.allocator, " RESTRICT");
             }
 
             defer sql_buf.deinit(self.allocator);

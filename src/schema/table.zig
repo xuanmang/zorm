@@ -39,6 +39,11 @@ pub const Column = struct {
     default_value: ?[]const u8 = null,
     check_expr: ?[]const u8 = null,
 
+    /// 自定义 SQL 类型（如果设置，优先级高于 column_type）
+    /// 允许用户指定任意 SQL 类型字符串，如 "VARCHAR(50)"、"DECIMAL(10,2)" 等
+    /// 注意：自定义类型字符串不会被验证，用户需自行确保类型有效性
+    custom_sql_type: ?[]const u8 = null,
+
     /// 外键引用
     foreign_key: ?ForeignKeyRef = null,
 
@@ -203,12 +208,16 @@ pub const Table = struct {
 };
 
 /// 写入列定义到 writer
-fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: Dialect, has_composite_pk: bool) !void {
+pub fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: Dialect, has_composite_pk: bool) !void {
     // 列名
     try writer.print("{s} ", .{col.name});
 
-    // 列类型（PostgreSQL 自增列使用 SERIAL/BIGSERIAL）
-    if (col.auto_increment and dialect == .postgresql) {
+    // 列类型（优先使用 custom_sql_type，否则使用 column_type）
+    if (col.custom_sql_type) |custom_type| {
+        // 使用自定义类型字符串
+        try writer.writeAll(custom_type);
+    } else if (col.auto_increment and dialect == .postgresql) {
+        // PostgreSQL 自增列使用 SERIAL/BIGSERIAL
         const serial_type = switch (col.column_type) {
             .bigint => "BIGSERIAL",
             .int => "SERIAL",
@@ -217,6 +226,7 @@ fn writeColumnDefinition(writer: anytype, col: *const Column, comptime dialect: 
         };
         try writer.writeAll(serial_type);
     } else {
+        // 使用自动推断的类型
         const sql_type = col.column_type.sqlType(dialect);
         try writer.writeAll(sql_type);
     }
@@ -410,4 +420,55 @@ test "Table: 复合主键" {
 
     // 复合主键应该单独声明
     try testing.expect(std.mem.indexOf(u8, sql, "PRIMARY KEY (user_id, role_id)") != null);
+}
+
+test "Column: 自定义 SQL 类型" {
+    var col = Column.init("username", .varchar);
+    col.custom_sql_type = "VARCHAR(50)";
+    col.nullable = false;
+
+    try testing.expectEqualStrings("VARCHAR(50)", col.custom_sql_type.?);
+    try testing.expect(!col.nullable);
+}
+
+test "Table: 自定义 SQL 类型生成" {
+    var table = try Table.init(testing.allocator, "users");
+    defer table.deinit();
+
+    var id_col = Column.init("id", .bigint);
+    _ = id_col.setPrimaryKey();
+    _ = try table.addColumn(id_col);
+
+    var username_col = Column.init("username", .varchar);
+    username_col.custom_sql_type = "VARCHAR(50)";
+    _ = username_col.setNotNull().setUnique();
+    _ = try table.addColumn(username_col);
+
+    var price_col = Column.init("price", .decimal);
+    price_col.custom_sql_type = "DECIMAL(10,2)";
+    _ = price_col.setDefault("0.00");
+    _ = try table.addColumn(price_col);
+
+    const sql = try table.toSQL(.postgresql);
+    defer testing.allocator.free(sql);
+
+    // 验证自定义类型出现在 SQL 中
+    try testing.expect(std.mem.indexOf(u8, sql, "username VARCHAR(50) NOT NULL UNIQUE") != null);
+    try testing.expect(std.mem.indexOf(u8, sql, "price DECIMAL(10,2) DEFAULT 0.00") != null);
+}
+
+test "Column: 自定义类型优先级高于自动推断" {
+    var table = try Table.init(testing.allocator, "test");
+    defer table.deinit();
+
+    // column_type 是 varchar，但自定义类型是 TEXT
+    var col = Column.init("description", .varchar);
+    col.custom_sql_type = "TEXT";
+    _ = try table.addColumn(col);
+
+    const sql = try table.toSQL(.postgresql);
+    defer testing.allocator.free(sql);
+
+    // 应该使用自定义的 TEXT 而不是 VARCHAR
+    try testing.expect(std.mem.indexOf(u8, sql, "description TEXT") != null);
 }

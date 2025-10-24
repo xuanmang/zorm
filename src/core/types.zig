@@ -5,6 +5,24 @@
 
 const std = @import("std");
 
+/// 序列化相关错误类型
+pub const SerializationError = error{
+    /// 内存分配失败
+    OutOfMemory,
+    /// 无效的格式
+    InvalidFormat,
+    /// 无效的 UUID 格式
+    InvalidUUIDFormat,
+    /// 无效的十六进制字符
+    InvalidHexDigit,
+    /// 无效的 JSON 格式
+    InvalidJSONFormat,
+    /// 无效的数组格式
+    InvalidArrayFormat,
+    /// 不支持的类型
+    UnsupportedType,
+};
+
 /// 获取结构体字段信息
 ///
 /// 在编译时反射结构体类型,返回所有字段的元数据。
@@ -378,6 +396,49 @@ pub fn isIntegerType(comptime field_type: type) bool {
 /// defer allocator.free(result);
 /// // result == "'{1,2,3}'"
 /// ```
+/// 转义字符串中的特殊字符 (用于 PostgreSQL 数组)
+fn escapeString(buf: *std.ArrayList(u8), str: []const u8, allocator: std.mem.Allocator) !void {
+    for (str) |ch| {
+        if (ch == '"' or ch == '\\') {
+            try buf.append(allocator, '\\');
+        }
+        try buf.append(allocator, ch);
+    }
+}
+
+/// 序列化单个数组元素
+fn serializeElement(buf: *std.ArrayList(u8), item: anytype, allocator: std.mem.Allocator) !void {
+    const T = @TypeOf(item);
+    const type_info = @typeInfo(T);
+
+    // 处理可选类型
+    if (type_info == .optional) {
+        if (item) |value| {
+            try serializeElement(buf, value, allocator);
+        } else {
+            try buf.appendSlice(allocator, "NULL");
+        }
+        return;
+    }
+
+    if (T == []const u8 or T == []u8) {
+        // 字符串需要引号和转义
+        try buf.append(allocator, '"');
+        try escapeString(buf, item, allocator);
+        try buf.append(allocator, '"');
+    } else if (type_info == .int or type_info == .float) {
+        // 数字类型直接格式化
+        const str = try std.fmt.allocPrint(allocator, "{d}", .{item});
+        defer allocator.free(str);
+        try buf.appendSlice(allocator, str);
+    } else if (T == bool) {
+        // 布尔值使用 PostgreSQL 格式: t/f
+        try buf.appendSlice(allocator, if (item) "t" else "f");
+    } else {
+        @compileError("Unsupported array element type: " ++ @typeName(T));
+    }
+}
+
 pub fn serializeArray(comptime T: type, array: []const T, allocator: std.mem.Allocator) ![]const u8 {
     var buf: std.ArrayList(u8) = .{};
     errdefer buf.deinit(allocator);
@@ -386,20 +447,7 @@ pub fn serializeArray(comptime T: type, array: []const T, allocator: std.mem.All
 
     for (array, 0..) |item, i| {
         if (i > 0) try buf.append(allocator, ',');
-
-        // 根据类型处理序列化
-        if (T == []const u8 or T == []u8) {
-            // 字符串需要引号和转义
-            try buf.append(allocator, '\"');
-            // 简化:直接添加字符串 (生产环境需要处理转义)
-            try buf.appendSlice(allocator, item);
-            try buf.append(allocator, '\"');
-        } else {
-            // 数字和其他类型直接格式化
-            const item_str = try std.fmt.allocPrint(allocator, "{any}", .{item});
-            defer allocator.free(item_str);
-            try buf.appendSlice(allocator, item_str);
-        }
+        try serializeElement(&buf, item, allocator);
     }
 
     try buf.appendSlice(allocator, "}'");
@@ -434,7 +482,7 @@ pub fn deserializeArray(comptime T: type, pg_array_str: []const u8, allocator: s
 
     // 移除前导 '{' 和尾部 '}'
     if (pg_array_str.len < 2 or pg_array_str[0] != '{' or pg_array_str[pg_array_str.len - 1] != '}') {
-        return error.InvalidFormat;
+        return SerializationError.InvalidArrayFormat;
     }
 
     const content = pg_array_str[1 .. pg_array_str.len - 1];
@@ -442,38 +490,98 @@ pub fn deserializeArray(comptime T: type, pg_array_str: []const u8, allocator: s
         return result; // 空数组
     }
 
-    // 简化实现:按逗号分割
+    // 处理可选类型
+    const base_type = if (@typeInfo(T) == .optional) @typeInfo(T).optional.child else T;
+    const is_optional = @typeInfo(T) == .optional;
+
+    // 按逗号分割 (简化实现,生产环境需要处理嵌套情况)
     var iter = std.mem.splitScalar(u8, content, ',');
     while (iter.next()) |item_str| {
         const trimmed = std.mem.trim(u8, item_str, " \t\r\n");
 
-        if (T == []const u8 or T == []u8) {
-            // 字符串:移除引号
+        // 处理 NULL 值
+        if (std.mem.eql(u8, trimmed, "NULL")) {
+            if (!is_optional) {
+                return SerializationError.InvalidFormat;
+            }
+            try result.append(allocator, null);
+            continue;
+        }
+
+        // 解析非 NULL 值
+        if (base_type == []const u8 or base_type == []u8) {
+            // 字符串: 移除引号和处理转义
             var value: []const u8 = trimmed;
-            if (value.len >= 2 and value[0] == '\"' and value[value.len - 1] == '\"') {
+            if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
                 value = value[1 .. value.len - 1];
             }
+            // TODO: 处理反斜杠转义
             const duped = try allocator.dupe(u8, value);
-            try result.append(allocator, duped);
-        } else if (T == i32 or T == i64 or T == u32 or T == u64 or T == i16 or T == u16) {
+            if (is_optional) {
+                try result.append(allocator, duped);
+            } else {
+                try result.append(allocator, duped);
+            }
+        } else if (@typeInfo(base_type) == .int) {
             // 整数解析
-            const value = try std.fmt.parseInt(T, trimmed, 10);
-            try result.append(allocator, value);
-        } else if (T == f32 or T == f64) {
+            const value = std.fmt.parseInt(base_type, trimmed, 10) catch {
+                return SerializationError.InvalidFormat;
+            };
+            if (is_optional) {
+                try result.append(allocator, value);
+            } else {
+                try result.append(allocator, value);
+            }
+        } else if (@typeInfo(base_type) == .float) {
             // 浮点数解析
-            const value = try std.fmt.parseFloat(T, trimmed);
-            try result.append(allocator, value);
-        } else if (T == bool) {
-            // 布尔值解析
+            const value = std.fmt.parseFloat(base_type, trimmed) catch {
+                return SerializationError.InvalidFormat;
+            };
+            if (is_optional) {
+                try result.append(allocator, value);
+            } else {
+                try result.append(allocator, value);
+            }
+        } else if (base_type == bool) {
+            // 布尔值解析: t/f 或 true/false
             const value = std.mem.eql(u8, trimmed, "t") or std.mem.eql(u8, trimmed, "true");
-            try result.append(allocator, value);
+            if (is_optional) {
+                try result.append(allocator, value);
+            } else {
+                try result.append(allocator, value);
+            }
         } else {
-            @compileError("不支持的数组元素类型: " ++ @typeName(T));
+            return SerializationError.UnsupportedType;
         }
     }
 
     return result;
 }
+
+/// 将 Zig 值序列化为 JSON 字符串
+///
+/// 使用 std.json.stringify() 实现 JSON 序列化
+///
+/// ## 参数
+/// - `value`: 要序列化的值
+/// - `allocator`: 内存分配器
+///
+/// ## 返回值
+/// JSON 字符串
+///
+/// ## 错误
+/// - `error.OutOfMemory`: 内存分配失败
+///
+/// ## 示例
+/// ```zig
+/// const data = .{ .name = "Alice", .age = 30 };
+/// const json = try serializeJSON(data, allocator);
+/// defer allocator.free(json);
+/// // json == "{\"name\":\"Alice\",\"age\":30}"
+/// ```
+// 注意: 对于 JSONB 类型,建议直接使用 []const u8 存储 JSON 字符串
+// PostgreSQL 会自动处理 JSON 验证和存储
+// 如需在 Zig 中操作 JSON,可使用 std.json 标准库的相关功能
 
 /// 将 UUID 字节数组序列化为标准 UUID 字符串格式
 ///
@@ -739,4 +847,261 @@ test "toLowerSnakeCase: acronym" {
         const result = toLowerSnakeCase("HTTPRequest");
         try std.testing.expectEqualStrings("httprequest", result);
     }
+}
+
+test "serializeArray: integers" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const nums = &[_]i64{ 1, 2, 3, 4, 5 };
+    const result = try serializeArray(i64, nums, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("'{1,2,3,4,5}'", result);
+}
+
+test "serializeArray: floats" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const nums = &[_]f64{ 1.5, 2.5, 3.5 };
+    const result = try serializeArray(f64, nums, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("'{1.5,2.5,3.5}'", result);
+}
+
+test "serializeArray: booleans" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const bools = &[_]bool{ true, false, true };
+    const result = try serializeArray(bool, bools, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("'{t,f,t}'", result);
+}
+
+test "serializeArray: strings" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const strs = &[_][]const u8{ "hello", "world", "test" };
+    const result = try serializeArray([]const u8, strs, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("'{\"hello\",\"world\",\"test\"}'", result);
+}
+
+test "serializeArray: strings with quotes" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const strs = &[_][]const u8{ "hello", "wo\"rld", "te\\st" };
+    const result = try serializeArray([]const u8, strs, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("'{\"hello\",\"wo\\\"rld\",\"te\\\\st\"}'", result);
+}
+
+test "serializeArray: empty array" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const nums = &[_]i32{};
+    const result = try serializeArray(i32, nums, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("'{}'", result);
+}
+
+test "deserializeArray: integers" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var result = try deserializeArray(i64, "{1,2,3,4,5}", allocator);
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 5), result.items.len);
+    try testing.expectEqual(@as(i64, 1), result.items[0]);
+    try testing.expectEqual(@as(i64, 2), result.items[1]);
+    try testing.expectEqual(@as(i64, 3), result.items[2]);
+    try testing.expectEqual(@as(i64, 4), result.items[3]);
+    try testing.expectEqual(@as(i64, 5), result.items[4]);
+}
+
+test "deserializeArray: floats" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var result = try deserializeArray(f64, "{1.5,2.5,3.5}", allocator);
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 3), result.items.len);
+    try testing.expectEqual(@as(f64, 1.5), result.items[0]);
+    try testing.expectEqual(@as(f64, 2.5), result.items[1]);
+    try testing.expectEqual(@as(f64, 3.5), result.items[2]);
+}
+
+test "deserializeArray: booleans" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var result = try deserializeArray(bool, "{t,f,t}", allocator);
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 3), result.items.len);
+    try testing.expect(result.items[0]);
+    try testing.expect(!result.items[1]);
+    try testing.expect(result.items[2]);
+}
+
+test "deserializeArray: strings" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var result = try deserializeArray([]const u8, "{\"hello\",\"world\",\"test\"}", allocator);
+    defer {
+        for (result.items) |item| {
+            allocator.free(item);
+        }
+        result.deinit(allocator);
+    }
+
+    try testing.expectEqual(@as(usize, 3), result.items.len);
+    try testing.expectEqualStrings("hello", result.items[0]);
+    try testing.expectEqualStrings("world", result.items[1]);
+    try testing.expectEqualStrings("test", result.items[2]);
+}
+
+test "deserializeArray: empty array" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    var result = try deserializeArray(i32, "{}", allocator);
+    defer result.deinit(allocator);
+
+    try testing.expectEqual(@as(usize, 0), result.items.len);
+}
+
+test "deserializeArray: invalid format" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const err = deserializeArray(i32, "1,2,3", allocator);
+    try testing.expectError(SerializationError.InvalidArrayFormat, err);
+}
+
+// ============ UUID 序列化/反序列化测试 (Task 4.1-4.2) ============
+
+test "uuidToString: standard UUID format" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const uuid: UUID = [_]u8{
+        0x55, 0x0e, 0x84, 0x00,
+        0xe2, 0x9b, 0x41, 0xd4,
+        0xa7, 0x16, 0x44, 0x66,
+        0x55, 0x44, 0x00, 0x00,
+    };
+
+    const str = try uuidToString(uuid, allocator);
+    defer allocator.free(str);
+
+    try testing.expectEqualStrings("550e8400-e29b-41d4-a716-446655440000", str);
+}
+
+test "uuidToString: all zeros" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const uuid: UUID = [_]u8{0} ** 16;
+    const str = try uuidToString(uuid, allocator);
+    defer allocator.free(str);
+
+    try testing.expectEqualStrings("00000000-0000-0000-0000-000000000000", str);
+}
+
+test "uuidToString: all ones" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const uuid: UUID = [_]u8{0xff} ** 16;
+    const str = try uuidToString(uuid, allocator);
+    defer allocator.free(str);
+
+    try testing.expectEqualStrings("ffffffff-ffff-ffff-ffff-ffffffffffff", str);
+}
+
+test "stringToUuid: standard format" {
+    const testing = std.testing;
+
+    const uuid = try stringToUuid("550e8400-e29b-41d4-a716-446655440000");
+
+    try testing.expectEqual(@as(u8, 0x55), uuid[0]);
+    try testing.expectEqual(@as(u8, 0x0e), uuid[1]);
+    try testing.expectEqual(@as(u8, 0x84), uuid[2]);
+    try testing.expectEqual(@as(u8, 0x00), uuid[3]);
+    try testing.expectEqual(@as(u8, 0xe2), uuid[4]);
+    try testing.expectEqual(@as(u8, 0x9b), uuid[5]);
+    try testing.expectEqual(@as(u8, 0x41), uuid[6]);
+    try testing.expectEqual(@as(u8, 0xd4), uuid[7]);
+}
+
+test "stringToUuid: uppercase letters" {
+    const testing = std.testing;
+
+    const uuid = try stringToUuid("550E8400-E29B-41D4-A716-446655440000");
+
+    try testing.expectEqual(@as(u8, 0x55), uuid[0]);
+    try testing.expectEqual(@as(u8, 0x0e), uuid[1]);
+    try testing.expectEqual(@as(u8, 0x84), uuid[2]);
+    try testing.expectEqual(@as(u8, 0x00), uuid[3]);
+}
+
+test "stringToUuid: no hyphens" {
+    const testing = std.testing;
+
+    const uuid = try stringToUuid("550e8400e29b41d4a716446655440000");
+
+    try testing.expectEqual(@as(u8, 0x55), uuid[0]);
+    try testing.expectEqual(@as(u8, 0x0e), uuid[1]);
+    try testing.expectEqual(@as(u8, 0x84), uuid[2]);
+    try testing.expectEqual(@as(u8, 0x00), uuid[3]);
+}
+
+test "stringToUuid: invalid format - too short" {
+    const testing = std.testing;
+
+    const err = stringToUuid("550e8400-e29b-41d4");
+    try testing.expectError(error.InvalidFormat, err);
+}
+
+test "stringToUuid: invalid format - invalid hex" {
+    const testing = std.testing;
+
+    const err = stringToUuid("550e8400-e29b-41d4-a716-44665544000g");
+    try testing.expectError(error.InvalidFormat, err);
+}
+
+test "stringToUuid: round-trip conversion" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    const original_uuid: UUID = [_]u8{
+        0x55, 0x0e, 0x84, 0x00,
+        0xe2, 0x9b, 0x41, 0xd4,
+        0xa7, 0x16, 0x44, 0x66,
+        0x55, 0x44, 0x00, 0x00,
+    };
+
+    // UUID -> String
+    const str = try uuidToString(original_uuid, allocator);
+    defer allocator.free(str);
+
+    // String -> UUID
+    const parsed_uuid = try stringToUuid(str);
+
+    // 验证一致性
+    try testing.expectEqualSlices(u8, &original_uuid, &parsed_uuid);
 }

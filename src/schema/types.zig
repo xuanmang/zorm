@@ -45,6 +45,19 @@ pub const SQLType = enum {
     serial, // auto-increment integer
     bigserial, // auto-increment bigint
 
+    // 数组类型 (PostgreSQL specific)
+    smallint_array, // SMALLINT[]
+    integer_array, // INTEGER[]
+    bigint_array, // BIGINT[]
+    real_array, // REAL[]
+    double_array, // DOUBLE PRECISION[]
+    boolean_array, // BOOLEAN[]
+    text_array, // TEXT[]
+    timestamp_array, // TIMESTAMP[]
+    timestamptz_array, // TIMESTAMPTZ[]
+    uuid_array, // UUID[]
+    jsonb_array, // JSONB[]
+
     /// 转换为 PostgreSQL SQL 类型字符串
     pub fn toSQL(self: SQLType, comptime dialect: Dialect) []const u8 {
         _ = dialect; // PostgreSQL 专用
@@ -69,6 +82,18 @@ pub const SQLType = enum {
             .uuid => "UUID",
             .serial => "SERIAL",
             .bigserial => "BIGSERIAL",
+            // 数组类型
+            .smallint_array => "SMALLINT[]",
+            .integer_array => "INTEGER[]",
+            .bigint_array => "BIGINT[]",
+            .real_array => "REAL[]",
+            .double_array => "DOUBLE PRECISION[]",
+            .boolean_array => "BOOLEAN[]",
+            .text_array => "TEXT[]",
+            .timestamp_array => "TIMESTAMP[]",
+            .timestamptz_array => "TIMESTAMPTZ[]",
+            .uuid_array => "UUID[]",
+            .jsonb_array => "JSONB[]",
         };
     }
 };
@@ -100,9 +125,15 @@ pub fn zigToSQLType(comptime T: type) SQLType {
         },
         .bool => .boolean,
         .pointer => |ptr_info| {
-            // []const u8 -> TEXT
-            if (ptr_info.size == .slice and ptr_info.child == u8) {
-                return .text;
+            if (ptr_info.size == .slice) {
+                // []const u8 -> TEXT (字符串)
+                if (ptr_info.child == u8) {
+                    return .text;
+                }
+                // 其他 slice 类型 -> 数组类型
+                // 例如: []i64 -> BIGINT[], [][]const u8 -> TEXT[]
+                const elem_sql_type = zigToSQLType(ptr_info.child);
+                return mapToArrayType(elem_sql_type);
             }
             @compileError("Unsupported pointer type for SQL: " ++ @typeName(T));
         },
@@ -110,7 +141,11 @@ pub fn zigToSQLType(comptime T: type) SQLType {
             return zigToSQLType(opt_info.child);
         },
         .array => |arr_info| {
-            // [N]u8 -> TEXT
+            // [16]u8 -> UUID (特殊处理)
+            if (arr_info.len == 16 and arr_info.child == u8) {
+                return .uuid;
+            }
+            // [N]u8 -> TEXT (字符串)
             if (arr_info.child == u8) {
                 return .text;
             }
@@ -120,7 +155,83 @@ pub fn zigToSQLType(comptime T: type) SQLType {
     };
 }
 
-/// 检查类型是否是可选类型
+/// 将基础 SQLType 映射到对应的数组类型
+pub fn mapToArrayType(base_type: SQLType) SQLType {
+    return switch (base_type) {
+        .smallint => .smallint_array,
+        .integer => .integer_array,
+        .bigint => .bigint_array,
+        .real => .real_array,
+        .double => .double_array,
+        .boolean => .boolean_array,
+        .text => .text_array,
+        .varchar => .text_array, // VARCHAR 数组映射为 TEXT[]
+        .char => .text_array, // CHAR 数组映射为 TEXT[]
+        .timestamp => .timestamp_array,
+        .timestamptz => .timestamptz_array,
+        .date => .timestamp_array, // DATE 数组映射为 TIMESTAMP[]
+        .time => .timestamp_array, // TIME 数组映射为 TIMESTAMP[]
+        .uuid => .uuid_array,
+        .json => .jsonb_array, // JSON 数组映射为 JSONB[]
+        .jsonb => .jsonb_array,
+        .serial => .integer_array, // SERIAL 数组映射为 INTEGER[]
+        .bigserial => .bigint_array, // BIGSERIAL 数组映射为 BIGINT[]
+        .blob => .text_array, // BLOB 数组映射为 TEXT[] (不推荐)
+        .bytea => .text_array, // BYTEA 数组映射为 TEXT[] (不推荐)
+        // 数组类型自身不能再创建数组 (不支持多维数组)
+        // 这些分支应该永远不会被执行,因为我们不支持多维数组
+        .smallint_array,
+        .integer_array,
+        .bigint_array,
+        .real_array,
+        .double_array,
+        .boolean_array,
+        .text_array,
+        .timestamp_array,
+        .timestamptz_array,
+        .uuid_array,
+        .jsonb_array,
+        => .text_array, // 返回 TEXT[] 作为默认值 (实际上不应该被调用)
+    };
+}
+
+/// 检测 SQLType 是否为数组类型
+pub fn isArrayType(sql_type: SQLType) bool {
+    return switch (sql_type) {
+        .smallint_array,
+        .integer_array,
+        .bigint_array,
+        .real_array,
+        .double_array,
+        .boolean_array,
+        .text_array,
+        .timestamp_array,
+        .timestamptz_array,
+        .uuid_array,
+        .jsonb_array,
+        => true,
+        else => false,
+    };
+}
+
+/// 获取数组类型的元素 SQLType
+pub fn arrayElementType(array_type: SQLType) ?SQLType {
+    return switch (array_type) {
+        .smallint_array => .smallint,
+        .integer_array => .integer,
+        .bigint_array => .bigint,
+        .real_array => .real,
+        .double_array => .double,
+        .boolean_array => .boolean,
+        .text_array => .text,
+        .timestamp_array => .timestamp,
+        .timestamptz_array => .timestamptz,
+        .uuid_array => .uuid,
+        .jsonb_array => .jsonb,
+        else => null,
+    };
+}
+
 pub fn isOptional(comptime T: type) bool {
     return @typeInfo(T) == .optional;
 }
@@ -185,4 +296,56 @@ test "SQLType.toSQL" {
     try testing.expectEqualStrings("UUID", SQLType.uuid.toSQL(.postgresql));
     try testing.expectEqualStrings("SERIAL", SQLType.serial.toSQL(.postgresql));
     try testing.expectEqualStrings("BIGSERIAL", SQLType.bigserial.toSQL(.postgresql));
+}
+
+test "zigToSQLType array types" {
+    const testing = std.testing;
+
+    // 数组类型检测
+    try testing.expectEqual(SQLType.bigint_array, zigToSQLType([]i64));
+    try testing.expectEqual(SQLType.integer_array, zigToSQLType([]u32));
+    try testing.expectEqual(SQLType.smallint_array, zigToSQLType([]i32));
+    try testing.expectEqual(SQLType.real_array, zigToSQLType([]f32));
+    try testing.expectEqual(SQLType.double_array, zigToSQLType([]f64));
+    try testing.expectEqual(SQLType.boolean_array, zigToSQLType([]bool));
+    try testing.expectEqual(SQLType.text_array, zigToSQLType([][]const u8));
+
+    // 可选数组类型
+    try testing.expectEqual(SQLType.bigint_array, zigToSQLType(?[]i64));
+    try testing.expectEqual(SQLType.text_array, zigToSQLType(?[][]const u8));
+
+    // UUID 特殊处理
+    try testing.expectEqual(SQLType.uuid, zigToSQLType([16]u8));
+}
+
+test "array type helpers" {
+    const testing = std.testing;
+
+    // mapToArrayType
+    try testing.expectEqual(SQLType.integer_array, mapToArrayType(.integer));
+    try testing.expectEqual(SQLType.bigint_array, mapToArrayType(.bigint));
+    try testing.expectEqual(SQLType.text_array, mapToArrayType(.text));
+    try testing.expectEqual(SQLType.boolean_array, mapToArrayType(.boolean));
+
+    // isArrayType
+    try testing.expect(isArrayType(.integer_array));
+    try testing.expect(isArrayType(.text_array));
+    try testing.expect(!isArrayType(.integer));
+    try testing.expect(!isArrayType(.text));
+
+    // arrayElementType
+    try testing.expectEqual(SQLType.integer, arrayElementType(.integer_array).?);
+    try testing.expectEqual(SQLType.bigint, arrayElementType(.bigint_array).?);
+    try testing.expectEqual(SQLType.text, arrayElementType(.text_array).?);
+    try testing.expectEqual(@as(?SQLType, null), arrayElementType(.integer));
+}
+
+test "SQLType.toSQL array types" {
+    const testing = std.testing;
+
+    try testing.expectEqualStrings("INTEGER[]", SQLType.integer_array.toSQL(.postgresql));
+    try testing.expectEqualStrings("BIGINT[]", SQLType.bigint_array.toSQL(.postgresql));
+    try testing.expectEqualStrings("TEXT[]", SQLType.text_array.toSQL(.postgresql));
+    try testing.expectEqualStrings("BOOLEAN[]", SQLType.boolean_array.toSQL(.postgresql));
+    try testing.expectEqualStrings("DOUBLE PRECISION[]", SQLType.double_array.toSQL(.postgresql));
 }

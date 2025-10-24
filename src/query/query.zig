@@ -780,6 +780,8 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         returning_columns: ?[]const []const u8,
         on_conflict: ?OnConflictClause,
         on_duplicate_key: ?OnDuplicateKeyUpdate,
+        /// 存储序列化后的数组/UUID/JSONB 字符串,确保生命周期管理
+        serialized_values: std.ArrayList([]const u8),
 
         /// 初始化插入查询构建器
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
@@ -795,6 +797,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 .returning_columns = null,
                 .on_conflict = null,
                 .on_duplicate_key = null,
+                .serialized_values = .{},
             };
 
             return self;
@@ -809,6 +812,12 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
                 self.allocator.free(row_values);
             }
             self.values_list.deinit(self.allocator);
+
+            // 释放序列化后的字符串
+            for (self.serialized_values.items) |serialized_str| {
+                self.allocator.free(serialized_str);
+            }
+            self.serialized_values.deinit(self.allocator);
 
             self.allocator.destroy(self);
         }
@@ -849,6 +858,64 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
 
             inline for (fields, 0..) |field, i| {
                 const field_value = @field(row, field.name);
+                const FieldType = @TypeOf(field_value);
+                const field_type_info = @typeInfo(FieldType);
+
+                // 处理数组类型 (切片,非 []const u8 字符串)
+                if (field_type_info == .pointer) {
+                    const ptr_info = field_type_info.pointer;
+                    if (ptr_info.size == .slice and ptr_info.child != u8) {
+                        // 这是一个数组 (非字符串切片),需要序列化
+                        const serialized = try core_types.serializeArray(ptr_info.child, field_value, self.allocator);
+                        try self.serialized_values.append(self.allocator, serialized);
+                        row_values[i] = .{ .string = serialized };
+                        continue;
+                    }
+                }
+
+                // 处理 UUID 类型 ([16]u8)
+                if (field_type_info == .array) {
+                    const arr_info = field_type_info.array;
+                    if (arr_info.len == 16 and arr_info.child == u8) {
+                        // 这是 UUID,需要序列化
+                        const serialized = try core_types.uuidToString(field_value, self.allocator);
+                        try self.serialized_values.append(self.allocator, serialized);
+                        row_values[i] = .{ .string = serialized };
+                        continue;
+                    }
+                }
+
+                // 处理可选数组和可选 UUID
+                if (field_type_info == .optional) {
+                    const opt_info = field_type_info.optional;
+                    const child_type_info = @typeInfo(opt_info.child);
+
+                    if (field_value) |val| {
+                        // 检查可选数组
+                        if (child_type_info == .pointer) {
+                            const child_ptr_info = child_type_info.pointer;
+                            if (child_ptr_info.size == .slice and child_ptr_info.child != u8) {
+                                const serialized = try core_types.serializeArray(child_ptr_info.child, val, self.allocator);
+                                try self.serialized_values.append(self.allocator, serialized);
+                                row_values[i] = .{ .string = serialized };
+                                continue;
+                            }
+                        }
+
+                        // 检查可选 UUID
+                        if (child_type_info == .array) {
+                            const child_arr_info = child_type_info.array;
+                            if (child_arr_info.len == 16 and child_arr_info.child == u8) {
+                                const serialized = try core_types.uuidToString(val, self.allocator);
+                                try self.serialized_values.append(self.allocator, serialized);
+                                row_values[i] = .{ .string = serialized };
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                // 默认处理:使用 QueryArg.fromValue
                 row_values[i] = QueryArg.fromValue(field_value);
             }
 
@@ -2719,6 +2786,8 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
         table_name: []const u8,
         index_name: []const u8,
         if_exists_flag: bool = false,
+        cascade_flag: bool = false,
+        restrict_flag: bool = false,
 
         /// 初始化 DROP INDEX 查询构建器
         ///
@@ -2736,6 +2805,8 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
                 .table_name = table_name,
                 .index_name = index_name,
                 .if_exists_flag = false,
+                .cascade_flag = false,
+                .restrict_flag = false,
             };
 
             return self;
@@ -2749,6 +2820,34 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
         /// 添加 IF EXISTS 子句
         pub fn ifExists(self: *Self) *Self {
             self.if_exists_flag = true;
+            return self;
+        }
+
+        /// 添加 CASCADE 选项
+        ///
+        /// 级联删除依赖于该索引的对象。
+        /// 注意:PostgreSQL 中很少有对象依赖索引,此选项较少使用。
+        /// CASCADE 和 RESTRICT 互斥,后调用的会覆盖前面的。
+        ///
+        /// ## 返回值
+        /// 返回 self 指针支持链式调用
+        pub fn cascade(self: *Self) *Self {
+            self.cascade_flag = true;
+            self.restrict_flag = false;
+            return self;
+        }
+
+        /// 添加 RESTRICT 选项
+        ///
+        /// 如果有对象依赖于该索引,则拒绝删除。
+        /// 这是默认行为,显式指定可以提高代码可读性。
+        /// CASCADE 和 RESTRICT 互斥,后调用的会覆盖前面的。
+        ///
+        /// ## 返回值
+        /// 返回 self 指针支持链式调用
+        pub fn restrict(self: *Self) *Self {
+            self.restrict_flag = true;
+            self.cascade_flag = false;
             return self;
         }
 
@@ -2771,6 +2870,12 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
                 try buf.appendSlice(self.allocator, self.table_name);
             } else {
                 try buf.appendSlice(self.allocator, self.index_name);
+            }
+
+            if (self.cascade_flag) {
+                try buf.appendSlice(self.allocator, " CASCADE");
+            } else if (self.restrict_flag) {
+                try buf.appendSlice(self.allocator, " RESTRICT");
             }
 
             return buf.toOwnedSlice(self.allocator);

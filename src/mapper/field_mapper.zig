@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const core_types = @import("../core/types.zig");
 
 /// Row 接口 (由驱动实现,使用 VTable 实现多态)
 ///
@@ -136,6 +137,22 @@ fn getFieldValue(comptime FieldType: type, row: *Row, index: usize, allocator: A
                 } else {
                     return try allocator.dupe(u8, str); // 复制字符串
                 }
+            }
+
+            // 数组类型反序列化 (切片,非 []const u8)
+            if (ptr_info.size == .slice and ptr_info.child != u8) {
+                const pg_array_str = try row.getString(index);
+                var result = try core_types.deserializeArray(ptr_info.child, pg_array_str, allocator);
+                return result.toOwnedSlice(allocator);
+            }
+
+            return error.UnsupportedType;
+        },
+        .array => |arr_info| {
+            // UUID 类型反序列化 ([16]u8)
+            if (arr_info.len == 16 and arr_info.child == u8) {
+                const uuid_str = try row.getString(index);
+                return try core_types.stringToUuid(uuid_str);
             }
             return error.UnsupportedType;
         },

@@ -47,34 +47,40 @@ pub fn generateCreateTableSQL(
     const table_name = getTableName(T);
     try writer.print("CREATE TABLE {s} (\n", .{table_name});
 
-    const fields = @typeInfo(T).@"struct".fields;
-    comptime var first = true;
+    // 使用 generateColumns 获取列定义（支持 schema 配置）
+    const columns = try generateColumns(T, allocator);
+    defer allocator.free(columns);
 
-    inline for (fields) |field| {
-        if (!first) {
+    // 检查是否有复合主键
+    var pk_count: usize = 0;
+    for (columns) |col| {
+        if (col.primary_key) pk_count += 1;
+    }
+    const has_composite_pk = pk_count > 1;
+
+    // 生成列定义
+    for (columns, 0..) |*col, i| {
+        if (i > 0) {
             try writer.writeAll(",\n");
         }
-        first = false;
+        try writer.writeAll("  ");
 
-        // 获取 SQL 类型
-        const sql_type = types.zigToSQLType(field.type);
-        const is_optional = types.isOptional(field.type);
+        // 使用 table_mod 中的 writeColumnDefinition 函数
+        try table_mod.writeColumnDefinition(writer, col, dialect, has_composite_pk);
+    }
 
-        // 列名和类型
-        try writer.print("  {s} {s}", .{
-            field.name,
-            sql_type.toSQL(dialect),
-        });
-
-        // 主键检测（简单规则：名为 "id" 的字段）
-        if (comptime std.mem.eql(u8, field.name, "id")) {
-            try writer.writeAll(" PRIMARY KEY");
+    // 如果有复合主键，添加 PRIMARY KEY 约束
+    if (has_composite_pk) {
+        try writer.writeAll(",\n  PRIMARY KEY (");
+        var first_pk = true;
+        for (columns) |col| {
+            if (col.primary_key) {
+                if (!first_pk) try writer.writeAll(", ");
+                try writer.writeAll(col.name);
+                first_pk = false;
+            }
         }
-
-        // NOT NULL 约束
-        if (!is_optional) {
-            try writer.writeAll(" NOT NULL");
-        }
+        try writer.writeAll(")");
     }
 
     try writer.writeAll("\n)");
@@ -141,10 +147,28 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
             .uuid => .uuid,
             .serial => .int, // SERIAL 映射为 INT
             .bigserial => .bigint, // BIGSERIAL 映射为 BIGINT
+            // 数组类型映射
+            .smallint_array => .smallint_array,
+            .integer_array => .int_array,
+            .bigint_array => .bigint_array,
+            .real_array => .float_array,
+            .double_array => .double_array,
+            .boolean_array => .boolean_array,
+            .text_array => .text_array,
+            .timestamp_array => .timestamp_array,
+            .timestamptz_array => .timestamp_array,
+            .uuid_array => .uuid_array,
+            .jsonb_array => .jsonb_array,
         };
 
+        // 使用自定义列名（如果配置了），否则使用字段名
+        const col_name = if (schema_cfg.column_name) |custom_name|
+            custom_name
+        else
+            field.name;
+
         columns[i] = .{
-            .name = field.name,
+            .name = col_name,
             .column_type = col_type,
             .nullable = is_optional,
             .primary_key = is_primary,
@@ -152,6 +176,7 @@ pub fn generateColumns(comptime T: type, allocator: Allocator) ![]Column {
             .unique = schema_cfg.unique,
             .default_value = schema_cfg.default,
             .check_expr = schema_cfg.check,
+            .custom_sql_type = schema_cfg.sql_type, // 设置自定义 SQL 类型
             .foreign_key = null,
         };
     }
@@ -217,7 +242,7 @@ test "generateCreateTableSQL" {
 
     // 验证包含关键部分
     try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGINT PRIMARY KEY NOT NULL") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "name TEXT NOT NULL") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT") != null);
     try std.testing.expect(std.mem.indexOf(u8, sql, "age INTEGER NOT NULL") != null);
@@ -262,4 +287,169 @@ test "hasField" {
     try std.testing.expect(hasField(User, "id"));
     try std.testing.expect(hasField(User, "name"));
     try std.testing.expect(!hasField(User, "email"));
+}
+
+test "generateColumns with custom column names" {
+    const User = struct {
+        id: i64,
+        user_name: []const u8,
+        user_email: []const u8,
+
+        pub const schema = .{
+            .user_name = .{ .column_name = "username" },
+            .user_email = .{ .column_name = "email" },
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    const columns = try generateColumns(User, allocator);
+    defer allocator.free(columns);
+
+    try std.testing.expectEqual(@as(usize, 3), columns.len);
+
+    // id 列（无自定义列名）
+    try std.testing.expectEqualStrings("id", columns[0].name);
+
+    // user_name 列（自定义列名为 username）
+    try std.testing.expectEqualStrings("username", columns[1].name);
+
+    // user_email 列（自定义列名为 email）
+    try std.testing.expectEqualStrings("email", columns[2].name);
+}
+
+test "generateColumns with custom SQL types" {
+    const User = struct {
+        id: i64,
+        username: []const u8,
+        price: f64,
+
+        pub const schema = .{
+            .username = .{ .sql_type = "VARCHAR(50)" },
+            .price = .{ .sql_type = "DECIMAL(10,2)" },
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    const columns = try generateColumns(User, allocator);
+    defer allocator.free(columns);
+
+    try std.testing.expectEqual(@as(usize, 3), columns.len);
+
+    // id 列（无自定义类型）
+    try std.testing.expect(columns[0].custom_sql_type == null);
+
+    // username 列（自定义类型 VARCHAR(50)）
+    try std.testing.expect(columns[1].custom_sql_type != null);
+    try std.testing.expectEqualStrings("VARCHAR(50)", columns[1].custom_sql_type.?);
+
+    // price 列（自定义类型 DECIMAL(10,2)）
+    try std.testing.expect(columns[2].custom_sql_type != null);
+    try std.testing.expectEqualStrings("DECIMAL(10,2)", columns[2].custom_sql_type.?);
+}
+
+test "generateColumns with custom column name and SQL type combined" {
+    const User = struct {
+        id: i64,
+        user_name: []const u8,
+
+        pub const schema = .{
+            .user_name = .{
+                .column_name = "username",
+                .sql_type = "VARCHAR(100)",
+                .unique = true,
+            },
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    const columns = try generateColumns(User, allocator);
+    defer allocator.free(columns);
+
+    try std.testing.expectEqual(@as(usize, 2), columns.len);
+
+    // user_name 列（同时有自定义列名和 SQL 类型）
+    try std.testing.expectEqualStrings("username", columns[1].name);
+    try std.testing.expectEqualStrings("VARCHAR(100)", columns[1].custom_sql_type.?);
+    try std.testing.expect(columns[1].unique);
+}
+
+test "generateCreateTableSQL with field customization - constraint combinations" {
+    const User = struct {
+        id: i64,
+        user_name: []const u8,
+        email: []const u8,
+        age: i32,
+        status: []const u8,
+
+        pub const table_name = "users";
+
+        pub const schema = .{
+            .user_name = .{
+                .column_name = "username",
+                .sql_type = "VARCHAR(50)",
+                .unique = true,
+            },
+            .email = .{
+                .unique = true,
+            },
+            .age = .{
+                .check = "age >= 0 AND age <= 150",
+            },
+            .status = .{
+                .default = "'active'",
+            },
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try generateCreateTableSQL(User, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证自定义列名和 SQL 类型
+    try std.testing.expect(std.mem.indexOf(u8, sql, "username VARCHAR(50)") != null);
+    // 验证 UNIQUE 约束
+    try std.testing.expect(std.mem.indexOf(u8, sql, "username VARCHAR(50) NOT NULL UNIQUE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT NOT NULL UNIQUE") != null);
+    // 验证 CHECK 约束
+    try std.testing.expect(std.mem.indexOf(u8, sql, "age >= 0 AND age <= 150") != null);
+    // 验证 DEFAULT 值
+    try std.testing.expect(std.mem.indexOf(u8, sql, "DEFAULT 'active'") != null);
+}
+
+test "PRD AC3.2.8 Example" {
+    // PRD Story 3.2 AC3.2.8 示例代码验证
+    const User = struct {
+        id: i64,
+        username: []const u8,
+        email: []const u8,
+        age: u32,
+        status: []const u8,
+        created_at: i64,
+
+        pub const table_name = "users";
+
+        // Schema 配置（comptime）
+        pub const schema = .{
+            .id = .{ .primary_key = true, .auto_increment = true },
+            .username = .{ .unique = true, .sql_type = "VARCHAR(50)" },
+            .email = .{ .unique = true },
+            .age = .{ .check = "age >= 0 AND age <= 150" },
+            .status = .{ .default = "'active'" },
+            .created_at = .{ .default = "CURRENT_TIMESTAMP" },
+        };
+    };
+
+    const allocator = std.testing.allocator;
+    const sql = try generateCreateTableSQL(User, .postgresql, allocator);
+    defer allocator.free(sql);
+
+    // 验证生成的 SQL 符合 PRD 期望
+    try std.testing.expect(std.mem.indexOf(u8, sql, "CREATE TABLE users") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "id BIGSERIAL PRIMARY KEY") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "username VARCHAR(50)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "username VARCHAR(50) NOT NULL UNIQUE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "email TEXT NOT NULL UNIQUE") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "age INTEGER NOT NULL CHECK (age >= 0 AND age <= 150)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "status TEXT NOT NULL DEFAULT 'active'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, sql, "created_at BIGINT NOT NULL DEFAULT CURRENT_TIMESTAMP") != null);
 }

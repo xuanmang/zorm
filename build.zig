@@ -137,6 +137,23 @@ pub fn build(b: *std.Build) void {
     const run_pg_types_tests = b.addRunArtifact(pg_types_tests);
     test_step.dependOn(&run_pg_types_tests.step);
 
+    // 添加 JOIN 查询测试
+    const join_query_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/join_query_test_simple.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    join_query_test_module.addOptions("build_options", options);
+    join_query_test_module.addImport("zorm", zorm_module);
+
+    const join_query_tests = b.addTest(.{
+        .root_module = join_query_test_module,
+    });
+
+    const run_join_query_tests = b.addRunArtifact(join_query_tests);
+    test_step.dependOn(&run_join_query_tests.step);
+
     // Schema 示例程序
     const schema_example_module = b.createModule(.{
         .root_source_file = b.path("examples/schema.zig"),

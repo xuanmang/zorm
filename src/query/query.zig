@@ -250,12 +250,126 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         }
 
         /// 添加 GROUP BY
+        /// 添加 GROUP BY 子句,用于对查询结果进行分组
+        ///
+        /// 此方法支持两种使用方式:
+        /// 1. 单次调用传入逗号分隔的多列: `groupBy("col1, col2, col3")`
+        /// 2. 多次链式调用分别添加列: `groupBy("col1").groupBy("col2").groupBy("col3")`
+        ///
+        /// GROUP BY 通常与聚合函数(COUNT, SUM, AVG, MAX, MIN)一起使用,
+        /// 用于对每个分组计算聚合值。
+        ///
+        /// 参数:
+        ///   - col: 分组列名,可以是单个列或逗号分隔的多个列
+        ///
+        /// 返回: 返回自身以支持链式调用
+        ///
+        /// 示例:
+        /// ```zig
+        /// // 单列分组 - 统计每个部门的人数
+        /// var query = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query.column("department");
+        /// _ = try query.column("COUNT(*) as user_count");
+        /// _ = try query.groupBy("department");
+        /// // 生成: SELECT department, COUNT(*) as user_count FROM users GROUP BY department
+        ///
+        /// // 多列分组(方式1) - 统计每个部门每个职位的人数
+        /// var query2 = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query2.column("department, position");
+        /// _ = try query2.column("COUNT(*) as count");
+        /// _ = try query2.groupBy("department, position");
+        /// // 生成: SELECT department, position, COUNT(*) as count FROM users GROUP BY department, position
+        ///
+        /// // 多列分组(方式2) - 链式调用
+        /// var query3 = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query3.column("department");
+        /// _ = try query3.column("position");
+        /// _ = try query3.column("COUNT(*) as count");
+        /// _ = try query3.groupBy("department");
+        /// _ = try query3.groupBy("position");
+        /// // 生成: SELECT department, position, COUNT(*) as count FROM users GROUP BY department, position
+        ///
+        /// // 与 JOIN 配合使用
+        /// var query4 = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query4.column("users.name");
+        /// _ = try query4.column("COUNT(posts.id) as post_count");
+        /// _ = try query4.innerJoin("posts", "posts.user_id = users.id");
+        /// _ = try query4.groupBy("users.id, users.name");
+        /// // 生成: SELECT users.name, COUNT(posts.id) as post_count FROM users
+        /// //       INNER JOIN posts ON posts.user_id = users.id
+        /// //       GROUP BY users.id, users.name
+        /// ```
+
         pub fn groupBy(self: *Self, col: []const u8) !*Self {
             try self.group_by_columns.append(self.allocator, col);
             return self;
         }
 
         /// 添加 HAVING 子句
+        /// 添加 HAVING 子句,用于过滤 GROUP BY 的分组结果
+        ///
+        /// HAVING 子句与 WHERE 子句类似,但作用于分组后的聚合结果。
+        /// WHERE 在分组前过滤行,HAVING 在分组后过滤分组。
+        ///
+        /// 多次调用 having() 会使用 AND 连接多个条件。
+        ///
+        /// 参数:
+        ///   - condition: HAVING 条件表达式,可以包含占位符($1, $2, ...)
+        ///   - args: 条件参数,会自动绑定到占位符
+        ///
+        /// 返回: 返回自身以支持链式调用
+        ///
+        /// 示例:
+        /// ```zig
+        /// // 基础 HAVING - 只显示文章数量大于10的用户
+        /// var query = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query.column("user_id");
+        /// _ = try query.column("COUNT(*) as post_count");
+        /// _ = try query.innerJoin("posts", "posts.user_id = users.id");
+        /// _ = try query.groupBy("user_id");
+        /// _ = try query.having("COUNT(*) > $1", .{10});
+        /// // 生成: SELECT user_id, COUNT(*) as post_count FROM users
+        /// //       INNER JOIN posts ON posts.user_id = users.id
+        /// //       GROUP BY user_id
+        /// //       HAVING COUNT(*) > $1
+        ///
+        /// // 多个 HAVING 条件 - 文章数>10 且总浏览量>1000
+        /// var query2 = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query2.column("user_id");
+        /// _ = try query2.column("COUNT(posts.id) as post_count");
+        /// _ = try query2.column("SUM(posts.view_count) as total_views");
+        /// _ = try query2.innerJoin("posts", "posts.user_id = users.id");
+        /// _ = try query2.groupBy("user_id");
+        /// _ = try query2.having("COUNT(posts.id) > $1", .{10});
+        /// _ = try query2.having("SUM(posts.view_count) > $2", .{1000});
+        /// // 生成: SELECT user_id, COUNT(posts.id) as post_count, SUM(posts.view_count) as total_views
+        /// //       FROM users INNER JOIN posts ON posts.user_id = users.id
+        /// //       GROUP BY user_id
+        /// //       HAVING COUNT(posts.id) > $1 AND SUM(posts.view_count) > $2
+        ///
+        /// // 完整示例 - GROUP BY + HAVING + ORDER BY
+        /// var query3 = try SelectQuery(User, .postgresql).init(allocator, &db, "users");
+        /// _ = try query3.column("users.name");
+        /// _ = try query3.column("COUNT(posts.id) as post_count");
+        /// _ = try query3.column("AVG(posts.view_count) as avg_views");
+        /// _ = try query3.innerJoin("posts", "posts.user_id = users.id");
+        /// _ = try query3.groupBy("users.id, users.name");
+        /// _ = try query3.having("COUNT(posts.id) > $1", .{5});
+        /// _ = try query3.having("AVG(posts.view_count) > $2", .{100.0});
+        /// _ = try query3.orderBy("post_count", .desc);
+        /// _ = try query3.limit(20);
+        /// // 生成: SELECT users.name, COUNT(posts.id) as post_count, AVG(posts.view_count) as avg_views
+        /// //       FROM users INNER JOIN posts ON posts.user_id = users.id
+        /// //       GROUP BY users.id, users.name
+        /// //       HAVING COUNT(posts.id) > $1 AND AVG(posts.view_count) > $2
+        /// //       ORDER BY post_count DESC LIMIT 20
+        /// ```
+        ///
+        /// 注意:
+        /// - HAVING 只能与 GROUP BY 一起使用
+        /// - HAVING 条件通常包含聚合函数(COUNT, SUM, AVG, MAX, MIN)
+        /// - WHERE 用于过滤原始行,HAVING 用于过滤聚合结果
+
         pub fn having(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
             const clause = HavingClause{
@@ -3402,6 +3516,230 @@ test "SelectQuery: GROUP BY and HAVING" {
     defer std.testing.allocator.free(sql);
 
     try std.testing.expectEqualStrings("SELECT department, COUNT(*) as count FROM users GROUP BY department HAVING COUNT(*) > $1", sql);
+}
+
+test "SelectQuery: COUNT aggregation" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.column("department");
+    _ = try query.column("COUNT(*) as user_count");
+    _ = try query.groupBy("department");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT department, COUNT(*) as user_count FROM users GROUP BY department", sql);
+}
+
+test "SelectQuery: SUM aggregation" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "orders");
+    defer query.deinit();
+
+    _ = try query.column("user_id");
+    _ = try query.column("SUM(amount) as total_amount");
+    _ = try query.groupBy("user_id");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT user_id, SUM(amount) as total_amount FROM orders GROUP BY user_id", sql);
+}
+
+test "SelectQuery: AVG aggregation" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "posts");
+    defer query.deinit();
+
+    _ = try query.column("user_id");
+    _ = try query.column("AVG(view_count) as avg_views");
+    _ = try query.groupBy("user_id");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT user_id, AVG(view_count) as avg_views FROM posts GROUP BY user_id", sql);
+}
+
+test "SelectQuery: MAX and MIN aggregation" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "products");
+    defer query.deinit();
+
+    _ = try query.column("category");
+    _ = try query.column("MAX(price) as max_price");
+    _ = try query.column("MIN(price) as min_price");
+    _ = try query.groupBy("category");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT category, MAX(price) as max_price, MIN(price) as min_price FROM products GROUP BY category", sql);
+}
+
+test "SelectQuery: COUNT DISTINCT aggregation" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "orders");
+    defer query.deinit();
+
+    _ = try query.column("COUNT(DISTINCT user_id) as unique_users");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT COUNT(DISTINCT user_id) as unique_users FROM orders", sql);
+}
+
+test "SelectQuery: Multiple DISTINCT aggregations" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "events");
+    defer query.deinit();
+
+    _ = try query.column("event_type");
+    _ = try query.column("COUNT(DISTINCT user_id) as unique_users");
+    _ = try query.column("COUNT(DISTINCT session_id) as unique_sessions");
+    _ = try query.groupBy("event_type");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT event_type, COUNT(DISTINCT user_id) as unique_users, COUNT(DISTINCT session_id) as unique_sessions FROM events GROUP BY event_type", sql);
+}
+
+test "SelectQuery: multi-column GROUP BY (single call)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "sales");
+    defer query.deinit();
+
+    _ = try query.column("department, category");
+    _ = try query.column("SUM(amount) as total_sales");
+    _ = try query.groupBy("department, category");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT department, category, SUM(amount) as total_sales FROM sales GROUP BY department, category", sql);
+}
+
+test "SelectQuery: multi-column GROUP BY (chained calls)" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "sales");
+    defer query.deinit();
+
+    _ = try query.column("department");
+    _ = try query.column("category");
+    _ = try query.column("SUM(amount) as total_sales");
+    _ = try query.groupBy("department");
+    _ = try query.groupBy("category");
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT department, category, SUM(amount) as total_sales FROM sales GROUP BY department, category", sql);
+}
+
+test "SelectQuery: JOIN with GROUP BY" {
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.column("users.name");
+    _ = try query.column("COUNT(posts.id) as post_count");
+    _ = try query.column("SUM(posts.view_count) as total_views");
+    _ = try query.innerJoin("posts", "posts.user_id = users.id");
+    _ = try query.groupBy("users.id, users.name");
+    _ = try query.having("COUNT(posts.id) > $1", .{5});
+    _ = try query.orderBy("total_views", .desc);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    try std.testing.expectEqualStrings("SELECT users.name, COUNT(posts.id) as post_count, SUM(posts.view_count) as total_views FROM users INNER JOIN posts ON posts.user_id = users.id GROUP BY users.id, users.name HAVING COUNT(posts.id) > $1 ORDER BY total_views DESC", sql);
+}
+
+test "Example: comprehensive aggregation query" {
+    // 这个测试演示了一个完整的聚合查询场景:
+    // 统计每个用户的文章数量、总浏览量、平均浏览量、最高浏览量和最低浏览量
+    // 只显示发表文章超过10篇且总浏览量超过1000的用户
+    // 按总浏览量降序排序
+    
+    const MockDB = struct {
+        allocator: Allocator,
+    };
+
+    var db = MockDB{ .allocator = std.testing.allocator };
+
+    var query = try SelectQuery(User, .postgresql).init(std.testing.allocator, @ptrCast(&db), "users");
+    defer query.deinit();
+
+    _ = try query.column("users.id");
+    _ = try query.column("users.name");
+    _ = try query.column("COUNT(posts.id) as post_count");
+    _ = try query.column("SUM(posts.view_count) as total_views");
+    _ = try query.column("AVG(posts.view_count) as avg_views");
+    _ = try query.column("MAX(posts.view_count) as max_views");
+    _ = try query.column("MIN(posts.view_count) as min_views");
+    _ = try query.column("COUNT(DISTINCT posts.category) as unique_categories");
+    _ = try query.innerJoin("posts", "posts.user_id = users.id");
+    _ = try query.groupBy("users.id");
+    _ = try query.groupBy("users.name");
+    _ = try query.having("COUNT(posts.id) > $1", .{10});
+    _ = try query.having("SUM(posts.view_count) > $2", .{1000});
+    _ = try query.orderBy("total_views", .desc);
+    _ = try query.limit(20);
+
+    const sql = try query.build(null);
+    defer std.testing.allocator.free(sql);
+
+    const expected = "SELECT users.id, users.name, COUNT(posts.id) as post_count, SUM(posts.view_count) as total_views, AVG(posts.view_count) as avg_views, MAX(posts.view_count) as max_views, MIN(posts.view_count) as min_views, COUNT(DISTINCT posts.category) as unique_categories FROM users INNER JOIN posts ON posts.user_id = users.id GROUP BY users.id, users.name HAVING COUNT(posts.id) > $1 AND SUM(posts.view_count) > $2 ORDER BY total_views DESC LIMIT 20";
+    try std.testing.expectEqualStrings(expected, sql);
 }
 
 test "SelectQuery: LIMIT and OFFSET" {

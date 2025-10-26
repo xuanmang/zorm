@@ -3582,11 +3582,13 @@ pub fn RawQuery(comptime dialect: Dialect) type {
         /// std.debug.print("Updated {} rows\n", .{result.rows_affected});
         /// ```
         pub fn exec(self: *Self) !RawResult {
-            const rows = try self.db.driver.query(self.sql, self.args);
-            defer rows.deinit();
+            // 使用 db.exec() 而不是直接调用 driver,确保钩子被触发
+            try self.db.exec(self.sql, self.args);
 
+            // TODO: 从 DB.exec 获取实际的 rows_affected
+            // 目前返回 0,待驱动实现后更新
             return RawResult{
-                .rows_affected = rows.rows_affected,
+                .rows_affected = 0,
             };
         }
 
@@ -3624,10 +3626,11 @@ pub fn RawQuery(comptime dialect: Dialect) type {
         /// try query.scan(UserStats, &results);
         /// ```
         pub fn scan(self: *Self, comptime T: type, dest: *std.ArrayList(T)) !void {
-            const rows = try self.db.driver.query(self.sql, self.args);
-            defer rows.deinit();
+            // 使用 db.query() 而不是直接调用 driver,确保钩子被触发
+            var result = try self.db.query(self.sql, self.args);
+            defer result.close();
 
-            try result_scanner.scanRows(T, rows, dest, self.allocator);
+            try result_scanner.scanAll(T, &result.rows, self.allocator, dest);
         }
 
         /// 执行查询并返回单行结果

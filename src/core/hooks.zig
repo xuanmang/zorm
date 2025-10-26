@@ -127,6 +127,161 @@ pub const QueryHook = struct {
 /// var logging_hook = LoggingHook.init();
 /// var hook = logging_hook.hook();
 /// ```
+/// 性能统计数据
+///
+/// 用于记录和展示查询性能指标
+pub const PerformanceStats = struct {
+    /// 总查询数
+    total_queries: u64,
+    /// 总执行时间(纳秒)
+    total_duration_ns: u64,
+    /// 慢查询数量
+    slow_queries: u64,
+    /// 错误数量
+    error_count: u64,
+    /// 平均查询时间(纳秒)
+    avg_duration_ns: u64,
+
+    /// 格式化输出统计信息
+    pub fn format(
+        self: PerformanceStats,
+        comptime fmt: []const u8,
+        options: std.fmt.FormatOptions,
+        writer: anytype,
+    ) !void {
+        _ = fmt;
+        _ = options;
+        try writer.print(
+            "PerformanceStats{{ queries: {d}, avg: {d}ms, slow: {d}, errors: {d} }}",
+            .{
+                self.total_queries,
+                self.avg_duration_ns / 1_000_000,
+                self.slow_queries,
+                self.error_count,
+            },
+        );
+    }
+};
+
+/// 性能钩子实现
+///
+/// 提供查询性能追踪和慢查询检测功能
+///
+/// ## 功能
+/// - beforeQuery: 记录查询开始时间
+/// - afterQuery: 计算执行时长、更新统计、检测慢查询
+/// - onError: 记录错误统计
+/// - getStats: 获取性能统计数据
+///
+/// ## 线程安全
+/// 使用原子操作确保多线程环境下的数据正确性
+///
+/// ## 使用示例
+/// ```zig
+/// var perf_hook = PerformanceHook.init(1000); // 1秒慢查询阈值
+/// var hook = perf_hook.hook();
+///
+/// try db.addHook(hook);
+///
+/// // 执行查询...
+///
+/// const stats = perf_hook.getStats();
+/// std.log.info("Performance: {}", .{stats});
+/// ```
+pub const PerformanceHook = struct {
+    const Self = @This();
+
+    /// 慢查询阈值(纳秒)
+    slow_query_threshold_ns: u64,
+
+    /// 总查询数
+    total_queries: std.atomic.Value(u64),
+    /// 总执行时间(纳秒)
+    total_duration_ns: std.atomic.Value(u64),
+    /// 慢查询计数
+    slow_queries: std.atomic.Value(u64),
+    /// 错误计数
+    error_count: std.atomic.Value(u64),
+
+    /// 创建性能钩子实例
+    ///
+    /// ## 参数
+    /// - slow_query_threshold_ms: 慢查询阈值(毫秒)
+    pub fn init(slow_query_threshold_ms: u64) Self {
+        return .{
+            .slow_query_threshold_ns = slow_query_threshold_ms * 1_000_000,
+            .total_queries = std.atomic.Value(u64).init(0),
+            .total_duration_ns = std.atomic.Value(u64).init(0),
+            .slow_queries = std.atomic.Value(u64).init(0),
+            .error_count = std.atomic.Value(u64).init(0),
+        };
+    }
+
+    /// 获取 QueryHook 接口
+    pub fn hook(self: *Self) QueryHook {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .beforeQuery = beforeQueryImpl,
+                .afterQuery = afterQueryImpl,
+                .onError = onErrorImpl,
+            },
+        };
+    }
+
+    /// 获取性能统计数据
+    pub fn getStats(self: *const Self) PerformanceStats {
+        const total = self.total_queries.load(.monotonic);
+        const duration = self.total_duration_ns.load(.monotonic);
+        const avg = if (total > 0) duration / total else 0;
+
+        return .{
+            .total_queries = total,
+            .total_duration_ns = duration,
+            .slow_queries = self.slow_queries.load(.monotonic),
+            .error_count = self.error_count.load(.monotonic),
+            .avg_duration_ns = avg,
+        };
+    }
+
+    /// 重置统计数据
+    pub fn reset(self: *Self) void {
+        self.total_queries.store(0, .monotonic);
+        self.total_duration_ns.store(0, .monotonic);
+        self.slow_queries.store(0, .monotonic);
+        self.error_count.store(0, .monotonic);
+    }
+
+    fn beforeQueryImpl(ptr: *anyopaque, sql: []const u8, args: []const QueryArg) !void {
+        _ = ptr;
+        _ = sql;
+        _ = args;
+        // beforeQuery 不需要记录任何内容,仅为接口完整性
+    }
+
+    fn afterQueryImpl(ptr: *anyopaque, sql: []const u8, _: []const QueryArg, duration_ns: u64) !void {
+        const self: *PerformanceHook = @ptrCast(@alignCast(ptr));
+
+        // 更新总查询数
+        _ = self.total_queries.fetchAdd(1, .monotonic);
+
+        // 更新总时间
+        _ = self.total_duration_ns.fetchAdd(duration_ns, .monotonic);
+
+        // 检测慢查询
+        if (duration_ns >= self.slow_query_threshold_ns) {
+            _ = self.slow_queries.fetchAdd(1, .monotonic);
+            const duration_ms = duration_ns / 1_000_000;
+            std.log.warn("[ZORM] Performance: SLOW QUERY ({d}ms): {s}", .{ duration_ms, sql });
+        }
+    }
+
+    fn onErrorImpl(ptr: *anyopaque, _: []const u8, _: []const QueryArg, _: anyerror) !void {
+        const self: *PerformanceHook = @ptrCast(@alignCast(ptr));
+        _ = self.error_count.fetchAdd(1, .monotonic);
+    }
+};
+
 pub const LoggingHook = struct {
     /// 是否启用日志记录
     enabled: bool,
@@ -367,4 +522,122 @@ test "QueryHook interface" {
     try h.beforeQuery(sql, args);
     try h.afterQuery(sql, args, 1_000_000);
     try h.onError(sql, args, error.TestError);
+}
+
+test "PerformanceHook basic functionality" {
+    var perf = PerformanceHook.init(1000); // 1秒阈值
+    var h = perf.hook();
+
+    const sql = "SELECT * FROM users WHERE id = $1";
+    const args = &[_]QueryArg{QueryArg.fromValue(1)};
+
+    // 初始统计应该为 0
+    var stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 0), stats.total_queries);
+    try std.testing.expectEqual(@as(u64, 0), stats.slow_queries);
+    try std.testing.expectEqual(@as(u64, 0), stats.error_count);
+
+    // 测试快速查询
+    try h.beforeQuery(sql, args);
+    try h.afterQuery(sql, args, 500_000_000); // 500ms
+    
+    stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 1), stats.total_queries);
+    try std.testing.expectEqual(@as(u64, 0), stats.slow_queries);
+    try std.testing.expectEqual(@as(u64, 500_000_000), stats.total_duration_ns);
+
+    // 测试慢查询
+    try h.beforeQuery(sql, args);
+    try h.afterQuery(sql, args, 2_000_000_000); // 2000ms
+    
+    stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 2), stats.total_queries);
+    try std.testing.expectEqual(@as(u64, 1), stats.slow_queries);
+    try std.testing.expectEqual(@as(u64, 2_500_000_000), stats.total_duration_ns);
+    try std.testing.expectEqual(@as(u64, 1_250_000_000), stats.avg_duration_ns);
+
+    // 测试错误统计
+    try h.onError(sql, args, error.TestError);
+    stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 1), stats.error_count);
+}
+
+test "PerformanceHook reset" {
+    var perf = PerformanceHook.init(1000);
+    var h = perf.hook();
+
+    const sql = "SELECT * FROM users";
+    const args = &[_]QueryArg{};
+
+    // 记录一些查询
+    try h.afterQuery(sql, args, 1_000_000);
+    try h.afterQuery(sql, args, 2_000_000);
+    try h.onError(sql, args, error.TestError);
+
+    var stats = perf.getStats();
+    try std.testing.expect(stats.total_queries > 0);
+
+    // 重置统计
+    perf.reset();
+    stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 0), stats.total_queries);
+    try std.testing.expectEqual(@as(u64, 0), stats.total_duration_ns);
+    try std.testing.expectEqual(@as(u64, 0), stats.slow_queries);
+    try std.testing.expectEqual(@as(u64, 0), stats.error_count);
+}
+
+test "PerformanceHook average calculation" {
+    var perf = PerformanceHook.init(1000);
+    var h = perf.hook();
+
+    const sql = "SELECT * FROM test";
+    const args = &[_]QueryArg{};
+
+    // 添加 3 个查询: 100ms, 200ms, 300ms
+    try h.afterQuery(sql, args, 100_000_000);
+    try h.afterQuery(sql, args, 200_000_000);
+    try h.afterQuery(sql, args, 300_000_000);
+
+    const stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 3), stats.total_queries);
+    try std.testing.expectEqual(@as(u64, 600_000_000), stats.total_duration_ns);
+    try std.testing.expectEqual(@as(u64, 200_000_000), stats.avg_duration_ns);
+}
+
+test "HookChain with PerformanceHook and LoggingHook" {
+    const allocator = std.testing.allocator;
+
+    var chain = try HookChain.init(allocator);
+    defer chain.deinit();
+
+    // 添加 PerformanceHook
+    var perf = PerformanceHook.init(1000);
+    try chain.add(perf.hook());
+
+    // 添加 LoggingHook
+    var logging = LoggingHook.init(true, 500);
+    try chain.add(logging.hook());
+
+    // 获取链式钩子
+    var h = chain.hook();
+
+    const sql = "SELECT * FROM users WHERE id = $1";
+    const args = &[_]QueryArg{QueryArg.fromValue(1)};
+
+    // 测试快速查询
+    try h.beforeQuery(sql, args);
+    try h.afterQuery(sql, args, 300_000_000); // 300ms
+
+    // 测试慢查询
+    try h.beforeQuery(sql, args);
+    try h.afterQuery(sql, args, 1_500_000_000); // 1500ms
+
+    // 测试错误
+    try h.onError(sql, args, error.TestError);
+
+    // 验证 PerformanceHook 统计
+    const stats = perf.getStats();
+    try std.testing.expectEqual(@as(u64, 2), stats.total_queries);
+    try std.testing.expectEqual(@as(u64, 1), stats.slow_queries);
+    try std.testing.expectEqual(@as(u64, 1), stats.error_count);
 }

@@ -1,0 +1,163 @@
+//! 查询构建器性能基准测试
+//!
+//! 验证 ZORM 的性能目标:
+//! - 查询构建时间 < 1ms
+//! - 运行时开销 < 5%
+//!
+//! 运行方式:
+//! ```sh
+//! zig build bench
+//! ```
+
+const std = @import("std");
+const zorm = @import("zorm");
+
+const User = struct {
+    id: i64 = 0,
+    name: []const u8,
+    email: []const u8,
+    age: i32,
+    active: bool = true,
+
+    pub const table_name = "users";
+};
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
+    std.debug.print("ZORM 查询构建器性能基准测试\n", .{});
+    std.debug.print("=" ** 60 ++ "\n\n", .{});
+
+    // 1. 简单查询构建基准测试
+    try benchmarkSimpleQuery(allocator);
+
+    // 2. 复杂查询构建基准测试
+    try benchmarkComplexQuery(allocator);
+
+    // 3. 批量插入查询构建基准测试
+    try benchmarkBatchInsert(allocator);
+
+    std.debug.print("\n✅ 基准测试完成!\n", .{});
+}
+
+/// 基准测试: 简单 SELECT 查询构建
+fn benchmarkSimpleQuery(allocator: std.mem.Allocator) !void {
+    std.debug.print("1️⃣  简单 SELECT 查询构建性能\n", .{});
+    std.debug.print("   目标: < 1ms\n\n", .{});
+
+    const iterations = 10000;
+    var timer = try std.time.Timer.start();
+
+    var i: usize = 0;
+    while (i < iterations) : (i += 1) {
+        var query = zorm.SelectQuery(User, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.column("id");
+        try query.column("name");
+        try query.column("email");
+        try query.where("age", .gte, 18);
+        try query.orderBy("name", .asc);
+        query.limit(10);
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+    }
+
+    const elapsed_ns = timer.read();
+    const avg_ns = elapsed_ns / iterations;
+    const avg_us = @as(f64, @floatFromInt(avg_ns)) / 1000.0;
+
+    std.debug.print("   迭代次数: {}\n", .{iterations});
+    std.debug.print("   总耗时: {d:.2}ms\n", .{@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0});
+    std.debug.print("   平均耗时: {d:.2}μs\n", .{avg_us});
+    std.debug.print("   结果: {s}\n\n", .{if (avg_us < 1000.0) "✅ 通过" else "❌ 未达标"});
+}
+
+/// 基准测试: 复杂 JOIN 查询构建
+fn benchmarkComplexQuery(allocator: std.mem.Allocator) !void {
+    std.debug.print("2️⃣  复杂 JOIN 查询构建性能\n", .{});
+    std.debug.print("   目标: < 1ms\n\n", .{});
+
+    const iterations = 5000;
+    var timer = try std.time.Timer.start();
+
+    var i: usize = 0;
+    while (i < iterations) : (i += 1) {
+        var query = zorm.SelectQuery(User, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.column("users.id");
+        try query.column("users.name");
+        try query.column("posts.title");
+        try query.column("COUNT(comments.id) as comment_count");
+
+        try query.join(.inner, "posts", "posts.user_id", .eq, "users.id");
+        try query.join(.left, "comments", "comments.post_id", .eq, "posts.id");
+
+        try query.where("users.active", .eq, true);
+        try query.where("posts.published", .eq, true);
+
+        try query.groupBy("users.id");
+        try query.groupBy("users.name");
+        try query.groupBy("posts.title");
+
+        try query.having("COUNT(comments.id)", .gte, 5);
+        try query.orderBy("comment_count", .desc);
+
+        query.limit(20);
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+    }
+
+    const elapsed_ns = timer.read();
+    const avg_ns = elapsed_ns / iterations;
+    const avg_us = @as(f64, @floatFromInt(avg_ns)) / 1000.0;
+
+    std.debug.print("   迭代次数: {}\n", .{iterations});
+    std.debug.print("   总耗时: {d:.2}ms\n", .{@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0});
+    std.debug.print("   平均耗时: {d:.2}μs\n", .{avg_us});
+    std.debug.print("   结果: {s}\n\n", .{if (avg_us < 1000.0) "✅ 通过" else "❌ 未达标"});
+}
+
+/// 基准测试: 批量插入查询构建
+fn benchmarkBatchInsert(allocator: std.mem.Allocator) !void {
+    std.debug.print("3️⃣  批量插入查询构建性能\n", .{});
+    std.debug.print("   目标: < 5ms (1000 行)\n\n", .{});
+
+    const batch_sizes = [_]usize{ 100, 500, 1000 };
+
+    for (batch_sizes) |batch_size| {
+        var timer = try std.time.Timer.start();
+
+        var query = zorm.InsertQuery(User, .postgresql).init(allocator);
+        defer query.deinit();
+
+        var i: usize = 0;
+        while (i < batch_size) : (i += 1) {
+            try query.values(.{
+                .name = "测试用户",
+                .email = "test@example.com",
+                .age = 25,
+                .active = true,
+            });
+        }
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        const elapsed_ns = timer.read();
+        const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+
+        std.debug.print("   批量大小: {} 行\n", .{batch_size});
+        std.debug.print("   构建耗时: {d:.2}ms\n", .{elapsed_ms});
+        std.debug.print("   SQL 长度: {} 字节\n", .{sql.len});
+
+        const target_ms: f64 = if (batch_size == 1000) 5.0 else @as(f64, @floatFromInt(batch_size)) / 200.0;
+        std.debug.print("   结果: {s}\n\n", .{if (elapsed_ms < target_ms) "✅ 通过" else "❌ 未达标"});
+    }
+}

@@ -1,0 +1,274 @@
+//! UPSERT (ON CONFLICT) 示例
+//!
+//! 本示例演示 ZORM 的 ON CONFLICT 处理:
+//! 1. ON CONFLICT DO NOTHING
+//! 2. ON CONFLICT DO UPDATE
+//! 3. 使用 EXCLUDED 关键字
+//! 4. 部分冲突更新 (WHERE 条件)
+//! 5. 多列冲突目标
+//!
+//! 运行方式:
+//! ```sh
+//! zig build run-example-upsert
+//! ```
+
+const std = @import("std");
+const zorm = @import("zorm");
+
+const Product = struct {
+    id: i64 = 0,
+    sku: []const u8, // 唯一商品编号
+    name: []const u8,
+    price: f64,
+    stock: i32,
+    updated_at: i64 = 0,
+
+    pub const table_name = "products";
+};
+
+const UserEmail = struct {
+    user_id: i64,
+    email: []const u8,
+    is_primary: bool,
+    verified: bool = false,
+
+    pub const table_name = "user_emails";
+};
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
+    std.debug.print("ZORM UPSERT (ON CONFLICT) 示例\n", .{});
+    std.debug.print("=" ** 60 ++ "\n\n", .{});
+
+    try demonstrateUpsert(allocator);
+
+    std.debug.print("\n✅ 示例执行完成!\n", .{});
+}
+
+fn demonstrateUpsert(allocator: std.mem.Allocator) !void {
+    std.debug.print("📝 演示 ON CONFLICT 处理:\n\n", .{});
+
+    // ========================================
+    // 1. ON CONFLICT DO NOTHING
+    // ========================================
+    std.debug.print("1️⃣  ON CONFLICT DO NOTHING - 忽略冲突\n", .{});
+    {
+        var query = zorm.InsertQuery(Product, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .sku = "PROD-001",
+            .name = "产品 A",
+            .price = 99.99,
+            .stock = 100,
+        });
+
+        // 如果 SKU 已存在,忽略插入
+        try query.onConflict(&[_][]const u8{"sku"});
+        try query.doNothing();
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: 如果 SKU 冲突,不执行任何操作\n\n", .{});
+    }
+
+    // ========================================
+    // 2. ON CONFLICT DO UPDATE - 基础
+    // ========================================
+    std.debug.print("2️⃣  ON CONFLICT DO UPDATE - 更新现有记录\n", .{});
+    {
+        var query = zorm.InsertQuery(Product, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .sku = "PROD-001",
+            .name = "产品 A (更新版)",
+            .price = 109.99,
+            .stock = 150,
+        });
+
+        // 如果 SKU 已存在,更新字段
+        try query.onConflict(&[_][]const u8{"sku"});
+        try query.doUpdate(&[_][]const u8{
+            "name = EXCLUDED.name",
+            "price = EXCLUDED.price",
+            "stock = EXCLUDED.stock",
+        });
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: EXCLUDED 引用插入语句中的新值\n\n", .{});
+    }
+
+    // ========================================
+    // 3. 使用 EXCLUDED 进行计算
+    // ========================================
+    std.debug.print("3️⃣  使用 EXCLUDED 进行计算 - 累加库存\n", .{});
+    {
+        var query = zorm.InsertQuery(Product, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .sku = "PROD-001",
+            .name = "产品 A",
+            .price = 99.99,
+            .stock = 50, // 新增库存
+        });
+
+        try query.onConflict(&[_][]const u8{"sku"});
+        try query.doUpdate(&[_][]const u8{
+            // 累加库存而不是覆盖
+            "stock = products.stock + EXCLUDED.stock",
+            // 更新价格
+            "price = EXCLUDED.price",
+        });
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: 现有库存 + 新库存\n\n", .{});
+    }
+
+    // ========================================
+    // 4. 带条件的 DO UPDATE
+    // ========================================
+    std.debug.print("4️⃣  带条件的 DO UPDATE - 仅在价格更低时更新\n", .{});
+    {
+        var query = zorm.InsertQuery(Product, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .sku = "PROD-001",
+            .name = "产品 A",
+            .price = 89.99, // 更低的价格
+            .stock = 100,
+        });
+
+        try query.onConflict(&[_][]const u8{"sku"});
+        try query.doUpdate(&[_][]const u8{
+            "price = EXCLUDED.price",
+            "stock = EXCLUDED.stock",
+        });
+
+        // 仅在新价格更低时才更新
+        try query.whereConflict("EXCLUDED.price < products.price");
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: 只有新价格更低时才执行更新\n\n", .{});
+    }
+
+    // ========================================
+    // 5. 多列冲突目标
+    // ========================================
+    std.debug.print("5️⃣  多列冲突目标 - 复合唯一键\n", .{});
+    {
+        var query = zorm.InsertQuery(UserEmail, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .user_id = 1,
+            .email = "user@example.com",
+            .is_primary = true,
+            .verified = false,
+        });
+
+        // user_id + email 复合唯一键
+        try query.onConflict(&[_][]const u8{ "user_id", "email" });
+        try query.doUpdate(&[_][]const u8{
+            "is_primary = EXCLUDED.is_primary",
+            "verified = EXCLUDED.verified",
+        });
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: 基于 (user_id, email) 复合键检测冲突\n\n", .{});
+    }
+
+    // ========================================
+    // 6. 批量 UPSERT
+    // ========================================
+    std.debug.print("6️⃣  批量 UPSERT - 插入或更新多条记录\n", .{});
+    {
+        var query = zorm.InsertQuery(Product, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .sku = "PROD-001",
+            .name = "产品 A",
+            .price = 99.99,
+            .stock = 100,
+        });
+
+        try query.values(.{
+            .sku = "PROD-002",
+            .name = "产品 B",
+            .price = 149.99,
+            .stock = 50,
+        });
+
+        try query.values(.{
+            .sku = "PROD-003",
+            .name = "产品 C",
+            .price = 199.99,
+            .stock = 30,
+        });
+
+        try query.onConflict(&[_][]const u8{"sku"});
+        try query.doUpdate(&[_][]const u8{
+            "name = EXCLUDED.name",
+            "price = EXCLUDED.price",
+            "stock = EXCLUDED.stock",
+        });
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: 批量插入或更新 3 条记录\n\n", .{});
+    }
+
+    // ========================================
+    // 7. RETURNING 子句
+    // ========================================
+    std.debug.print("7️⃣  UPSERT + RETURNING - 返回受影响的记录\n", .{});
+    {
+        var query = zorm.InsertQuery(Product, .postgresql).init(allocator);
+        defer query.deinit();
+
+        try query.values(.{
+            .sku = "PROD-001",
+            .name = "产品 A",
+            .price = 99.99,
+            .stock = 100,
+        });
+
+        try query.onConflict(&[_][]const u8{"sku"});
+        try query.doUpdate(&[_][]const u8{
+            "price = EXCLUDED.price",
+            "stock = EXCLUDED.stock",
+        });
+
+        // 返回更新后的记录
+        try query.returning(&[_][]const u8{ "id", "sku", "price", "stock" });
+
+        const sql = try query.buildSQL();
+        defer allocator.free(sql);
+
+        std.debug.print("   SQL: {s}\n", .{sql});
+        std.debug.print("   说明: 返回插入或更新后的记录\n\n", .{});
+    }
+}

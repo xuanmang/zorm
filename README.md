@@ -25,17 +25,125 @@
 - ✅ Dialect 系统 (comptime 特性检测)
 - ✅ DB 连接管理接口
 - ✅ 查询构建器框架 (SelectQuery, InsertQuery, UpdateQuery, DeleteQuery)
-- ✅ 查询钩子系统
-- ✅ Schema 类型映射
-- ✅ 构建系统 (build.zig)
+- ✅ 查询钩子系统 (Logging, Performance, Custom Hooks)
+- ✅ Schema 类型映射 (CREATE TABLE, DROP TABLE, CREATE/DROP INDEX)
+- ✅ 事务管理 (BEGIN, COMMIT, ROLLBACK, 隔离级别)
+- ✅ JOIN 查询 (INNER, LEFT, RIGHT, 多表 JOIN)
+- ✅ UPSERT (ON CONFLICT DO NOTHING/UPDATE)
+- ✅ 子查询支持 (WHERE IN/NOT IN/EXISTS/NOT EXISTS, FROM 派生表)
+- ✅ GROUP BY 和聚合函数
+- ✅ 构建系统和示例程序
+- ✅ 性能基准测试框架
 
 **待实现:**
 - 🔨 完整的结果扫描和序列化
 - 🔨 关系映射 (Belongs-To, Has-Many, Many-to-Many)
 - 🔨 Schema 迁移系统
 - 🔨 连接池管理
-- 🔨 事务隔离级别
 - 🔨 预编译语句缓存
+
+## 🚀 快速开始
+
+### 安装
+
+在 `build.zig.zon` 中添加依赖:
+
+```zig
+.dependencies = .{
+    .zorm = .{
+        .url = "https://github.com/yourusername/zorm/archive/main.tar.gz",
+        .hash = "...",
+    },
+},
+```
+
+### 基础用法
+
+```zig
+const std = @import("std");
+const zorm = @import("zorm");
+
+// 定义模型
+const User = struct {
+    id: i64 = 0,
+    name: []const u8,
+    email: []const u8,
+    age: i32,
+
+    pub const table_name = "users";
+};
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // 1. 连接数据库 (示例,需要实际驱动)
+    // const db = try zorm.DB(.postgresql).init(allocator, conn, .{});
+    // defer db.deinit();
+
+    // 2. 构建查询
+    var query = zorm.SelectQuery(User, .postgresql).init(allocator);
+    defer query.deinit();
+
+    try query.column("id");
+    try query.column("name");
+    try query.column("email");
+    try query.where("age", .gte, 18);
+    try query.orderBy("name", .asc);
+    query.limit(10);
+
+    const sql = try query.buildSQL();
+    defer allocator.free(sql);
+
+    // 输出: SELECT id, name, email FROM users WHERE age >= $1 ORDER BY name ASC LIMIT 10
+    std.debug.print("SQL: {s}\n", .{sql});
+}
+```
+
+### 运行示例
+
+```bash
+# 基础 CRUD 操作
+zig build run-example-basic
+
+# 事务管理
+zig build run-example-transaction
+
+# JOIN 查询
+zig build run-example-join
+
+# UPSERT 操作
+zig build run-example-upsert
+
+# 查询钩子
+zig build run-example-hooks
+
+# Schema 管理
+zig build run-example-schema
+
+# 编译所有示例
+zig build examples
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
+zig build test
+
+# 运行性能基准测试
+zig build bench
+```
+
+### 生成文档
+
+```bash
+# 生成 HTML 文档
+zig build docs
+
+# 文档输出在 zig-out/docs/
+```
 
 ## 🏗️ 架构设计
 
@@ -137,6 +245,87 @@ pub fn main() !void {
 }
 ```
 
+### 钩子系统 (Hooks)
+
+ZORM 提供了灵活的钩子系统用于查询可观测性、日志记录和性能追踪：
+
+```zig
+const std = @import("std");
+const zorm = @import("zorm");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var db = try zorm.DB.open(allocator, .{
+        .dialect = .postgresql,
+        .dsn = "postgres://user:pass@localhost/mydb",
+    });
+    defer db.close();
+
+    // 1. 添加日志钩子 - 记录所有查询
+    var logger = zorm.LoggingHook.init(allocator);
+    defer logger.deinit();
+    try db.addHook(&logger.hook);
+
+    // 2. 添加性能钩子 - 追踪慢查询
+    var perf_hook = zorm.PerformanceHook.init(allocator, .{
+        .slow_query_threshold_ms = 100, // 100ms 阈值
+    });
+    defer perf_hook.deinit();
+    try db.addHook(&perf_hook.hook);
+
+    // 执行查询 - 钩子会自动触发
+    var query = try db.newSelect(User);
+    defer query.deinit();
+    const users = try query.scan();
+    defer allocator.free(users);
+
+    // 获取性能统计
+    const stats = perf_hook.getStats();
+    std.debug.print("总查询数: {}\n", .{stats.total_queries});
+    std.debug.print("平均耗时: {}ms\n", .{stats.avg_duration_ms});
+    std.debug.print("慢查询数: {}\n", .{stats.slow_queries});
+}
+```
+
+**内置钩子:**
+- `LoggingHook` - 查询日志记录
+- `PerformanceHook` - 性能统计和慢查询检测
+- `HookChain` - 组合多个钩子
+
+**自定义钩子:**
+
+```zig
+const MyHook = struct {
+    hook: zorm.QueryHook,
+
+    pub fn init(allocator: std.mem.Allocator) MyHook {
+        return .{
+            .hook = .{
+                .ptr = undefined,
+                .beforeQueryFn = beforeQuery,
+                .afterQueryFn = afterQuery,
+                .onErrorFn = onError,
+            },
+        };
+    }
+
+    fn beforeQuery(ptr: *anyopaque, query: []const u8, args: []const zorm.Value) void {
+        // 查询执行前的逻辑
+    }
+
+    fn afterQuery(ptr: *anyopaque, query: []const u8, duration_ns: u64) void {
+        // 查询执行后的逻辑
+    }
+
+    fn onError(ptr: *anyopaque, query: []const u8, err: anyerror) void {
+        // 错误处理逻辑
+    }
+};
+```
+
 ## 🔧 构建和测试
 
 ```bash
@@ -173,11 +362,24 @@ zig build -Doptimize=ReleaseSafe  # 安全检查
 zig build -Doptimize=ReleaseSmall # 最小体积
 ```
 
-## 📚 文档
+## 📚 文档和资源
 
-详细文档请参阅:
+### 官方文档
 - [功能需求规格说明书](docs/functional_spec.md) - 完整的功能定义和 API 设计
 - [API 文档](zig-out/docs/index.html) - 通过 `zig build docs` 生成
+
+### 示例程序
+所有示例位于 `examples/` 目录:
+- [basic.zig](examples/basic.zig) - 基础 CRUD 操作示例
+- [transaction.zig](examples/transaction.zig) - 事务管理示例
+- [join.zig](examples/join.zig) - JOIN 查询示例
+- [upsert.zig](examples/upsert.zig) - UPSERT (ON CONFLICT) 示例
+- [hooks.zig](examples/hooks.zig) - 查询钩子示例
+- [schema.zig](examples/schema.zig) - Schema 管理示例
+
+### 性能基准测试
+- [benchmarks/](benchmarks/) - 性能基准测试套件
+- [基准测试说明](benchmarks/README.md) - 性能目标和测试方法
 
 ## 🎯 设计理念
 

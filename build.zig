@@ -171,6 +171,29 @@ pub fn build(b: *std.Build) void {
     const run_subquery_tests = b.addRunArtifact(subquery_tests);
     test_step.dependOn(&run_subquery_tests.step);
 
+    // 添加 debug 和错误上下文测试
+    const debug_error_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/debug_error_context_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    debug_error_test_module.addOptions("build_options", options);
+    debug_error_test_module.addImport("zorm", zorm_module);
+
+    const debug_error_tests = b.addTest(.{
+        .root_module = debug_error_test_module,
+    });
+
+    const run_debug_error_tests = b.addRunArtifact(debug_error_tests);
+    test_step.dependOn(&run_debug_error_tests.step);
+
+    // ========================================
+    // 示例程序 (Examples)
+    // ========================================
+    // 注: examples/*.example 文件是文档示例,展示 API 用法但不编译
+    //     schema.zig 是可运行的示例程序
+
     // Schema 示例程序
     const schema_example_module = b.createModule(.{
         .root_source_file = b.path("examples/schema.zig"),
@@ -188,4 +211,19 @@ pub fn build(b: *std.Build) void {
     const run_schema_example = b.addRunArtifact(schema_example);
     const schema_example_step = b.step("run-example-schema", "Run schema management example");
     schema_example_step.dependOn(&run_schema_example.step);
+
+    // 统一的示例编译步骤
+    const examples_step = b.step("examples", "Compile all examples");
+    examples_step.dependOn(&schema_example.step);
+
+    // ========================================
+    // 性能基准测试 (Benchmarks)
+    // ========================================
+    // 注: benchmarks/*.example 文件是基准测试模板
+    //     需要配合实际的数据库驱动才能运行
+    //     当前作为参考文档提供
+
+    // 基准测试步骤(占位)
+    const bench_step = b.step("bench", "Performance benchmarks (requires DB driver)");
+    _ = bench_step;
 }

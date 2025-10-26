@@ -1,0 +1,275 @@
+//! 基础 CRUD 操作示例
+//!
+//! 本示例演示 ZORM 的基本用法:
+//! 1. 数据库连接
+//! 2. 创建表
+//! 3. 插入数据 (INSERT)
+//! 4. 查询数据 (SELECT)
+//! 5. 更新数据 (UPDATE)
+//! 6. 删除数据 (DELETE)
+//!
+//! 运行方式:
+//! ```sh
+//! zig build run-example-basic
+//! ```
+//!
+//! 环境变量配置:
+//! - DB_HOST: 数据库主机 (默认: localhost)
+//! - DB_PORT: 数据库端口 (默认: 5432)
+//! - DB_USER: 数据库用户 (默认: postgres)
+//! - DB_PASSWORD: 数据库密码 (默认: postgres)
+//! - DB_NAME: 数据库名称 (默认: zorm_examples)
+
+const std = @import("std");
+const zorm = @import("zorm");
+
+// 定义用户模型
+const User = struct {
+    id: i64 = 0,
+    name: []const u8,
+    email: []const u8,
+    age: i32,
+    active: bool = true,
+
+    // 定义表名
+    pub const table_name = "users";
+};
+
+pub fn main() !void {
+    // 使用通用分配器
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    std.debug.print("\n" ++ "=" ** 60 ++ "\n", .{});
+    std.debug.print("ZORM 基础 CRUD 操作示例\n", .{});
+    std.debug.print("=" ** 60 ++ "\n\n", .{});
+
+    // 1. 配置数据库连接
+    const db_config = getDBConfig();
+    std.debug.print("📦 连接数据库: {s}@{s}:{s}/{s}\n", .{
+        db_config.user,
+        db_config.host,
+        db_config.port,
+        db_config.database,
+    });
+
+    // 注意: 这里是伪代码示例,实际需要根据驱动实现调整
+    // 创建数据库连接 (需要实际的 PostgreSQL 驱动)
+    // const conn = try zorm.driver.PostgreSQL.connect(allocator, db_config);
+    // defer conn.close();
+
+    // 为了示例,我们使用模拟连接
+    std.debug.print("⚠️  注意: 当前为示例模式,未连接真实数据库\n\n", .{});
+
+    // 模拟创建 DB 实例
+    demonstrateAPI(allocator) catch |err| {
+        std.debug.print("❌ 错误: {any}\n", .{err});
+        return err;
+    };
+
+    std.debug.print("\n✅ 示例执行完成!\n", .{});
+}
+
+/// 演示 ZORM API 使用
+fn demonstrateAPI(allocator: std.mem.Allocator) !void {
+    // 注意: 实际使用时需要真实的数据库连接
+    // const db = try zorm.DB(.postgresql).init(allocator, conn, .{});
+    // defer db.deinit();
+
+    std.debug.print("📝 演示 ZORM 查询构建器 API:\n\n", .{});
+
+    // ========================================
+    // 1. CREATE TABLE
+    // ========================================
+    std.debug.print("1️⃣  创建表 (CREATE TABLE)\n", .{});
+    {
+        // 注意: 这里演示 API,实际执行需要 db.exec()
+        const create_query = try demonstrateCreateTable(allocator);
+        defer allocator.free(create_query.sql);
+        defer allocator.free(create_query.args);
+
+        std.debug.print("   SQL: {s}\n", .{create_query.sql});
+        std.debug.print("   参数: {any}\n\n", .{create_query.args});
+    }
+
+    // ========================================
+    // 2. INSERT
+    // ========================================
+    std.debug.print("2️⃣  插入数据 (INSERT)\n", .{});
+    {
+        const insert_query = try demonstrateInsert(allocator);
+        defer allocator.free(insert_query.sql);
+        defer allocator.free(insert_query.args);
+
+        std.debug.print("   SQL: {s}\n", .{insert_query.sql});
+        std.debug.print("   参数: {d} 个\n\n", .{insert_query.args.len});
+    }
+
+    // ========================================
+    // 3. SELECT
+    // ========================================
+    std.debug.print("3️⃣  查询数据 (SELECT)\n", .{});
+    {
+        const select_query = try demonstrateSelect(allocator);
+        defer allocator.free(select_query.sql);
+        defer allocator.free(select_query.args);
+
+        std.debug.print("   SQL: {s}\n", .{select_query.sql});
+        std.debug.print("   参数: {any}\n\n", .{select_query.args});
+    }
+
+    // ========================================
+    // 4. UPDATE
+    // ========================================
+    std.debug.print("4️⃣  更新数据 (UPDATE)\n", .{});
+    {
+        const update_query = try demonstrateUpdate(allocator);
+        defer allocator.free(update_query.sql);
+        defer allocator.free(update_query.args);
+
+        std.debug.print("   SQL: {s}\n", .{update_query.sql});
+        std.debug.print("   参数: {d} 个\n\n", .{update_query.args.len});
+    }
+
+    // ========================================
+    // 5. DELETE
+    // ========================================
+    std.debug.print("5️⃣  删除数据 (DELETE)\n", .{});
+    {
+        const delete_query = try demonstrateDelete(allocator);
+        defer allocator.free(delete_query.sql);
+        defer allocator.free(delete_query.args);
+
+        std.debug.print("   SQL: {s}\n", .{delete_query.sql});
+        std.debug.print("   参数: {any}\n\n", .{delete_query.args});
+    }
+}
+
+const QueryResult = struct {
+    sql: []const u8,
+    args: []const zorm.types.QueryArg,
+};
+
+/// 演示 CREATE TABLE
+fn demonstrateCreateTable(allocator: std.mem.Allocator) !QueryResult {
+    const query = zorm.CreateTableQuery(User, .postgresql).init(allocator);
+    defer query.deinit();
+
+    const sql = try query.buildSQL();
+    const args = try allocator.alloc(zorm.types.QueryArg, 0);
+
+    return QueryResult{ .sql = sql, .args = args };
+}
+
+/// 演示 INSERT
+fn demonstrateInsert(allocator: std.mem.Allocator) !QueryResult {
+    var query = zorm.InsertQuery(User, .postgresql).init(allocator);
+    defer query.deinit();
+
+    // 插入单条记录
+    try query.values(.{
+        .name = "张三",
+        .email = "zhangsan@example.com",
+        .age = 28,
+        .active = true,
+    });
+
+    // 批量插入
+    try query.values(.{
+        .name = "李四",
+        .email = "lisi@example.com",
+        .age = 32,
+        .active = true,
+    });
+
+    try query.values(.{
+        .name = "王五",
+        .email = "wangwu@example.com",
+        .age = 25,
+        .active = false,
+    });
+
+    const sql = try query.buildSQL();
+    const args = try query.collectArgs();
+
+    return QueryResult{ .sql = sql, .args = args };
+}
+
+/// 演示 SELECT
+fn demonstrateSelect(allocator: std.mem.Allocator) !QueryResult {
+    var query = zorm.SelectQuery(User, .postgresql).init(allocator);
+    defer query.deinit();
+
+    // 选择特定列
+    try query.column("id");
+    try query.column("name");
+    try query.column("email");
+    try query.column("age");
+
+    // 添加 WHERE 条件
+    try query.where("age", .gte, 25);
+    try query.where("active", .eq, true);
+
+    // 排序
+    try query.orderBy("age", .desc);
+
+    // 分页
+    query.limit(10);
+    query.offset(0);
+
+    const sql = try query.buildSQL();
+    const args = try query.collectArgs();
+
+    return QueryResult{ .sql = sql, .args = args };
+}
+
+/// 演示 UPDATE
+fn demonstrateUpdate(allocator: std.mem.Allocator) !QueryResult {
+    var query = zorm.UpdateQuery(User, .postgresql).init(allocator);
+    defer query.deinit();
+
+    // 设置更新字段
+    try query.set("age", 29);
+    try query.set("active", true);
+
+    // WHERE 条件
+    try query.where("email", .eq, "zhangsan@example.com");
+
+    const sql = try query.buildSQL();
+    const args = try query.collectArgs();
+
+    return QueryResult{ .sql = sql, .args = args };
+}
+
+/// 演示 DELETE
+fn demonstrateDelete(allocator: std.mem.Allocator) !QueryResult {
+    var query = zorm.DeleteQuery(User, .postgresql).init(allocator);
+    defer query.deinit();
+
+    // WHERE 条件 (安全要求,必须有条件)
+    try query.where("active", .eq, false);
+    try query.where("age", .lt, 18);
+
+    const sql = try query.buildSQL();
+    const args = try query.collectArgs();
+
+    return QueryResult{ .sql = sql, .args = args };
+}
+
+/// 获取数据库配置
+fn getDBConfig() struct {
+    host: []const u8,
+    port: []const u8,
+    user: []const u8,
+    password: []const u8,
+    database: []const u8,
+} {
+    return .{
+        .host = std.posix.getenv("DB_HOST") orelse "localhost",
+        .port = std.posix.getenv("DB_PORT") orelse "5432",
+        .user = std.posix.getenv("DB_USER") orelse "postgres",
+        .password = std.posix.getenv("DB_PASSWORD") orelse "postgres",
+        .database = std.posix.getenv("DB_NAME") orelse "zorm_examples",
+    };
+}

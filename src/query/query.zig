@@ -320,7 +320,6 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// //       INNER JOIN posts ON posts.user_id = users.id
         /// //       GROUP BY users.id, users.name
         /// ```
-
         pub fn groupBy(self: *Self, col: []const u8) !*Self {
             try self.group_by_columns.append(self.allocator, col);
             return self;
@@ -390,7 +389,6 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// - HAVING 只能与 GROUP BY 一起使用
         /// - HAVING 条件通常包含聚合函数(COUNT, SUM, AVG, MAX, MIN)
         /// - WHERE 用于过滤原始行,HAVING 用于过滤聚合结果
-
         pub fn having(self: *Self, condition: []const u8, args: anytype) !*Self {
             const args_slice = try allocArgs(self.allocator, args);
             const clause = HavingClause{
@@ -702,9 +700,9 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         ///     .fromSubquery(derived, "user_stats")
         ///     .where("post_count > $1", .{5})
         ///     .scan(&results);
-        /// // 生成: SELECT * FROM (SELECT users.id, users.name, COUNT(posts.id) AS post_count 
-        /// //                      FROM users LEFT JOIN posts ON posts.user_id = users.id 
-        /// //                      GROUP BY users.id, users.name) AS user_stats 
+        /// // 生成: SELECT * FROM (SELECT users.id, users.name, COUNT(posts.id) AS post_count
+        /// //                      FROM users LEFT JOIN posts ON posts.user_id = users.id
+        /// //                      GROUP BY users.id, users.name) AS user_stats
         /// //       WHERE post_count > $1
         /// ```
         pub fn fromSubquery(self: *Self, subquery: anytype, alias: []const u8) !*Self {
@@ -746,10 +744,87 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// const sql = try query.build(null);
         /// defer db.allocator.free(sql);
         /// ```
+        /// 估算 SELECT SQL 字符串的容量
+        /// 用于预分配缓冲区，减少内存分配次数
+        fn estimateSelectSQLSize(self: *Self) usize {
+            var size: usize = 100; // SELECT [DISTINCT] * FROM
+
+            // 表名或派生表
+            if (self.derived_table) |dt| {
+                size += dt.sql.len + dt.alias.len + 10; // (subquery) AS alias
+            } else {
+                size += self.table_name.len;
+            }
+
+            // 列名
+            if (self.columns.items.len > 0) {
+                for (self.columns.items) |col| {
+                    size += col.len + 2; // ", "
+                }
+            }
+
+            // JOIN 子句
+            for (self.join_clauses.items) |join_clause| {
+                size += 20; // JOIN type
+                size += join_clause.table.len;
+                size += join_clause.condition.len;
+                size += 10; // " ON "
+            }
+
+            // WHERE 子句
+            if (self.where_clauses.items.len > 0 or self.subquery_clauses.items.len > 0) {
+                size += 10; // " WHERE "
+                for (self.where_clauses.items) |clause| {
+                    size += clause.condition.len + 10; // AND/OR
+                }
+                for (self.subquery_clauses.items) |sub_clause| {
+                    size += sub_clause.sql.len + 20;
+                }
+            }
+
+            // GROUP BY
+            if (self.group_by_columns.items.len > 0) {
+                size += 15; // " GROUP BY "
+                for (self.group_by_columns.items) |col| {
+                    size += col.len + 2; // ", "
+                }
+            }
+
+            // HAVING
+            if (self.having_clauses.items.len > 0) {
+                size += 10; // " HAVING "
+                for (self.having_clauses.items) |clause| {
+                    size += clause.condition.len + 10; // AND
+                }
+            }
+
+            // ORDER BY
+            if (self.order_by_clauses.items.len > 0) {
+                size += 12; // " ORDER BY "
+                for (self.order_by_clauses.items) |order_clause| {
+                    size += order_clause.column.len + 10; // ASC/DESC, ", "
+                }
+            }
+
+            // LIMIT and OFFSET
+            if (self.limit_value != null) {
+                size += 20; // " LIMIT 999999"
+            }
+            if (self.offset_value != null) {
+                size += 20; // " OFFSET 999999"
+            }
+
+            return size;
+        }
+
         pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             const allocator = alloc orelse self.allocator;
+
+            // AC4.8.2: SQL 缓冲区预分配优化
+            const estimated_size = self.estimateSelectSQLSize();
             var buf = std.ArrayList(u8){};
             errdefer buf.deinit(allocator);
+            try buf.ensureTotalCapacity(allocator, estimated_size);
 
             // SELECT [DISTINCT]
             try buf.appendSlice(allocator, "SELECT ");
@@ -877,6 +952,26 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ```
         pub fn buildSQL(self: *Self) ![]const u8 {
             return self.build(null);
+        }
+
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newSelect(User);
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.where("age > ?", .{18}).explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `buildSQL()` 完全等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.buildSQL();
         }
 
         /// 执行查询并扫描一条记录
@@ -1454,7 +1549,6 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             return self;
         }
 
-
         /// 添加 ON DUPLICATE KEY UPDATE 子句 (仅 MySQL 支持)
         ///
         /// ## 参数
@@ -1734,6 +1828,27 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
             return buf.toOwnedSlice(allocator);
         }
 
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 INSERT SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newInsert(User);
+        /// defer query.deinit();
+        ///
+        /// const user = User{ .name = "Alice", .email = "alice@example.com" };
+        /// const sql = try query.value(user).explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
+        }
+
         /// 执行插入查询
         /// 执行插入查询
         ///
@@ -1881,7 +1996,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // 释放 WHERE 子句参数和 condition 字符串
             for (self.where_clauses.items) |clause| {
-                self.allocator.free(clause.condition);  // 释放 condition 字符串
+                self.allocator.free(clause.condition); // 释放 condition 字符串
                 self.allocator.free(clause.args);
             }
             self.where_clauses.deinit(self.allocator);
@@ -2179,14 +2294,50 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         ///
         /// ## 错误
         /// - NoColumnsToUpdate: 没有设置任何要更新的列
+        /// 估算 UPDATE SQL 字符串的容量
+        /// 用于预分配缓冲区，减少内存分配次数
+        fn estimateUpdateSQLSize(self: *Self) usize {
+            var size: usize = 50; // UPDATE table SET
+
+            // 表名
+            size += self.table_name.len;
+
+            // SET 子句
+            for (self.set_clauses.items) |clause| {
+                size += clause.assignment.len + 10; // assignment,
+            }
+
+            // WHERE 子句
+            if (self.where_clauses.items.len > 0) {
+                size += 10; // " WHERE "
+                for (self.where_clauses.items) |clause| {
+                    size += clause.condition.len + 10; // AND/OR
+                }
+            }
+
+            // RETURNING
+            if (self.returning_columns) |ret_cols| {
+                size += 15; // " RETURNING "
+                for (ret_cols) |col| {
+                    size += col.len + 2; // ", "
+                }
+            }
+
+            return size;
+        }
+
         pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             if (self.set_clauses.items.len == 0) {
                 return error.NoColumnsToUpdate;
             }
 
             const allocator = alloc orelse self.allocator;
+
+            // AC4.8.2: SQL 缓冲区预分配优化
+            const estimated_size = self.estimateUpdateSQLSize();
             var buf = std.ArrayList(u8){};
             errdefer buf.deinit(allocator);
+            try buf.ensureTotalCapacity(allocator, estimated_size);
 
             // UPDATE table
             try buf.appendSlice(allocator, "UPDATE ");
@@ -2250,6 +2401,26 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             return buf.toOwnedSlice(allocator);
+        }
+
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 UPDATE SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newUpdate(User);
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.set("status", "active").where("id = ?", .{123}).explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
         }
 
         /// 执行更新查询，返回受影响的行数
@@ -2621,6 +2792,33 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         ///
         /// ## 错误
         /// - MissingWhereClause: 未设置 WHERE 条件（安全检查）
+        /// 估算 DELETE SQL 字符串的容量
+        /// 用于预分配缓冲区，减少内存分配次数
+        fn estimateDeleteSQLSize(self: *Self) usize {
+            var size: usize = 50; // DELETE FROM table
+
+            // 表名
+            size += self.table_name.len;
+
+            // WHERE 子句
+            if (self.where_clauses.items.len > 0) {
+                size += 10; // " WHERE "
+                for (self.where_clauses.items) |clause| {
+                    size += clause.condition.len + 10; // AND/OR
+                }
+            }
+
+            // RETURNING
+            if (self.returning_columns) |ret_cols| {
+                size += 15; // " RETURNING "
+                for (ret_cols) |col| {
+                    size += col.len + 2; // ", "
+                }
+            }
+
+            return size;
+        }
+
         pub fn build(self: *Self, alloc: ?Allocator) ![]const u8 {
             // 安全检查：强制要求 WHERE 条件
             if (!self.has_where) {
@@ -2628,8 +2826,12 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             const allocator = alloc orelse self.allocator;
+
+            // AC4.8.2: SQL 缓冲区预分配优化
+            const estimated_size = self.estimateDeleteSQLSize();
             var buf = std.ArrayList(u8){};
             errdefer buf.deinit(allocator);
+            try buf.ensureTotalCapacity(allocator, estimated_size);
 
             // DELETE FROM table
             try buf.appendSlice(allocator, "DELETE FROM ");
@@ -2670,6 +2872,26 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             return buf.toOwnedSlice(allocator);
+        }
+
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 DELETE SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newDelete(User);
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.where("status = ?", .{"inactive"}).explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
         }
 
         /// 执行删除查询，返回受影响的行数
@@ -2956,6 +3178,26 @@ pub fn CreateTableQuery(comptime T: type, comptime dialect: Dialect) type {
             return buf.toOwnedSlice(self.allocator);
         }
 
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 CREATE TABLE SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newCreateTable(User);
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.ifNotExists().explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
+        }
+
         /// 执行 CREATE TABLE 语句
         ///
         /// ## 错误
@@ -3076,6 +3318,26 @@ pub fn DropTableQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             return buf.toOwnedSlice(self.allocator);
+        }
+
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 DROP TABLE SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newDropTable(User);
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.ifExists().cascade().explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
         }
 
         /// 执行 DROP TABLE 语句
@@ -3312,6 +3574,26 @@ pub fn CreateIndexQuery(comptime T: type, comptime dialect: Dialect) type {
             return buf.toOwnedSlice(self.allocator);
         }
 
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 CREATE INDEX SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newCreateIndex("idx_user_email", User, &.{"email"});
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.unique().explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
+        }
+
         /// 执行 CREATE INDEX 语句
         ///
         /// 构建并执行 SQL，直接在数据库中创建索引
@@ -3454,6 +3736,26 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             return buf.toOwnedSlice(self.allocator);
+        }
+
+        /// 返回生成的 SQL 语句（不执行）
+        ///
+        /// 用于调试和验证 DROP INDEX SQL 生成逻辑。返回的 SQL 字符串由调用者负责释放。
+        ///
+        /// ## 示例
+        /// ```zig
+        /// var query = try db.newDropIndex("idx_user_email");
+        /// defer query.deinit();
+        ///
+        /// const sql = try query.ifExists().explain();
+        /// defer db.allocator.free(sql);
+        /// std.debug.print("Generated SQL:\n{s}\n", .{sql});
+        /// ```
+        ///
+        /// ## 等价于
+        /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
+        pub fn explain(self: *Self) ![]const u8 {
+            return self.build();
         }
 
         /// 执行 DROP INDEX 语句
@@ -4043,7 +4345,7 @@ test "Example: comprehensive aggregation query" {
     // 统计每个用户的文章数量、总浏览量、平均浏览量、最高浏览量和最低浏览量
     // 只显示发表文章超过10篇且总浏览量超过1000的用户
     // 按总浏览量降序排序
-    
+
     const MockDB = struct {
         allocator: Allocator,
     };
@@ -4397,7 +4699,6 @@ test "InsertQuery: 完整复杂插入 (PostgreSQL)" {
 
     try std.testing.expectEqualStrings(expected, sql);
 }
-
 
 test "InsertQuery: onConflict 空列名数组错误" {
     const MockDB = struct {

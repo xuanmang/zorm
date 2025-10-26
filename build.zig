@@ -154,6 +154,23 @@ pub fn build(b: *std.Build) void {
     const run_join_query_tests = b.addRunArtifact(join_query_tests);
     test_step.dependOn(&run_join_query_tests.step);
 
+    // 添加子查询测试
+    const subquery_test_module = b.createModule(.{
+        .root_source_file = b.path("tests/subquery_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    subquery_test_module.addOptions("build_options", options);
+    subquery_test_module.addImport("zorm", zorm_module);
+
+    const subquery_tests = b.addTest(.{
+        .root_module = subquery_test_module,
+    });
+
+    const run_subquery_tests = b.addRunArtifact(subquery_tests);
+    test_step.dependOn(&run_subquery_tests.step);
+
     // Schema 示例程序
     const schema_example_module = b.createModule(.{
         .root_source_file = b.path("examples/schema.zig"),

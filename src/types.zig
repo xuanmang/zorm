@@ -809,6 +809,244 @@ test "DeleteResult creation" {
     try testing.expectEqual(@as(usize, 3), result.rows_affected);
 }
 
+// ========== 子查询相关类型 ==========
+
+/// 子查询类型
+///
+/// 定义不同类型的子查询操作
+pub const SubqueryType = enum {
+    /// WHERE column IN (SELECT ...)
+    where_in,
+
+    /// WHERE column NOT IN (SELECT ...)
+    where_not_in,
+
+    /// WHERE EXISTS (SELECT ...)
+    exists,
+
+    /// WHERE NOT EXISTS (SELECT ...)
+    not_exists,
+};
+
+/// 子查询子句
+///
+/// 存储子查询的SQL、参数和类型信息。
+/// 用于构建WHERE IN、EXISTS等子查询条件。
+///
+/// ## 使用场景
+/// - WHERE IN 子查询:过滤在子查询结果中的记录
+/// - WHERE NOT IN 子查询:过滤不在子查询结果中的记录
+/// - WHERE EXISTS 子查询:过滤存在关联记录的记录
+/// - WHERE NOT EXISTS 子查询:过滤不存在关联记录的记录
+///
+/// ## 示例
+/// ```zig
+/// const clause = SubqueryClause{
+///     .type = .where_in,
+///     .column = "id",
+///     .sql = "SELECT user_id FROM posts WHERE published = $1",
+///     .args = &[_]QueryArg{QueryArg.fromValue(true)},
+/// };
+/// ```
+pub const SubqueryClause = struct {
+    /// 子查询类型
+    type: SubqueryType,
+
+    /// 列名(仅用于 WHERE IN/NOT IN,可选)
+    column: ?[]const u8,
+
+    /// 子查询的完整SQL语句
+    sql: []const u8,
+
+    /// 子查询的绑定参数
+    args: []const QueryArg,
+
+    /// 将子查询子句转换为SQL字符串
+    ///
+    /// 根据子查询类型生成对应的SQL语法。
+    ///
+    /// 参数:
+    /// - allocator: 用于分配SQL字符串的内存分配器
+    ///
+    /// 返回:
+    /// - 生成的SQL字符串(调用者负责释放)
+    ///
+    /// 错误:
+    /// - error.OutOfMemory: 内存分配失败
+    ///
+    /// 示例:
+    /// ```zig
+    /// const sql = try clause.toSQL(allocator);
+    /// defer allocator.free(sql);
+    /// // 对于WHERE IN: "id IN (SELECT ...)"
+    /// // 对于EXISTS: "EXISTS (SELECT ...)"
+    /// ```
+    pub fn toSQL(self: SubqueryClause, allocator: std.mem.Allocator) ![]const u8 {
+        return switch (self.type) {
+            .where_in => try std.fmt.allocPrint(
+                allocator,
+                "{s} IN ({s})",
+                .{ self.column.?, self.sql },
+            ),
+            .where_not_in => try std.fmt.allocPrint(
+                allocator,
+                "{s} NOT IN ({s})",
+                .{ self.column.?, self.sql },
+            ),
+            .exists => try std.fmt.allocPrint(
+                allocator,
+                "EXISTS ({s})",
+                .{self.sql},
+            ),
+            .not_exists => try std.fmt.allocPrint(
+                allocator,
+                "NOT EXISTS ({s})",
+                .{self.sql},
+            ),
+        };
+    }
+};
+
+/// FROM派生表子句
+///
+/// 存储派生表的SQL、别名和参数信息。
+/// 用于FROM子句中的子查询。
+///
+/// ## 使用场景
+/// - 在FROM子句中使用子查询作为派生表
+/// - 对子查询结果进行进一步过滤或聚合
+///
+/// ## 示例
+/// ```zig
+/// const derived = DerivedTable{
+///     .sql = "SELECT id, COUNT(*) as post_count FROM users LEFT JOIN posts ON posts.user_id = users.id GROUP BY id",
+///     .alias = "user_stats",
+///     .args = &[_]QueryArg{},
+/// };
+/// ```
+pub const DerivedTable = struct {
+    /// 派生表子查询的SQL
+    sql: []const u8,
+
+    /// 派生表别名(必须)
+    alias: []const u8,
+
+    /// 派生表查询的参数
+    args: []const QueryArg,
+};
+
+test "SubqueryType enum" {
+    const testing = std.testing;
+
+    // 验证枚举值存在
+    const where_in_type: SubqueryType = .where_in;
+    const where_not_in_type: SubqueryType = .where_not_in;
+    const exists_type: SubqueryType = .exists;
+    const not_exists_type: SubqueryType = .not_exists;
+
+    try testing.expect(where_in_type == .where_in);
+    try testing.expect(where_not_in_type == .where_not_in);
+    try testing.expect(exists_type == .exists);
+    try testing.expect(not_exists_type == .not_exists);
+}
+
+test "SubqueryClause.toSQL - WHERE IN" {
+    const testing = std.testing;
+
+    const args = [_]QueryArg{QueryArg.fromValue(true)};
+    const clause = SubqueryClause{
+        .type = .where_in,
+        .column = "id",
+        .sql = "SELECT user_id FROM posts WHERE published = $1",
+        .args = &args,
+    };
+
+    const sql = try clause.toSQL(std.testing.allocator);
+    defer std.testing.allocator.free(sql);
+
+    try testing.expectEqualStrings(
+        "id IN (SELECT user_id FROM posts WHERE published = $1)",
+        sql,
+    );
+}
+
+test "SubqueryClause.toSQL - WHERE NOT IN" {
+    const testing = std.testing;
+
+    const args = [_]QueryArg{QueryArg.fromValue(false)};
+    const clause = SubqueryClause{
+        .type = .where_not_in,
+        .column = "user_id",
+        .sql = "SELECT id FROM users WHERE active = $1",
+        .args = &args,
+    };
+
+    const sql = try clause.toSQL(std.testing.allocator);
+    defer std.testing.allocator.free(sql);
+
+    try testing.expectEqualStrings(
+        "user_id NOT IN (SELECT id FROM users WHERE active = $1)",
+        sql,
+    );
+}
+
+test "SubqueryClause.toSQL - EXISTS" {
+    const testing = std.testing;
+
+    const args = [_]QueryArg{QueryArg.fromValue(100)};
+    const clause = SubqueryClause{
+        .type = .exists,
+        .column = null,
+        .sql = "SELECT 1 FROM orders WHERE user_id = users.id AND total > $1",
+        .args = &args,
+    };
+
+    const sql = try clause.toSQL(std.testing.allocator);
+    defer std.testing.allocator.free(sql);
+
+    try testing.expectEqualStrings(
+        "EXISTS (SELECT 1 FROM orders WHERE user_id = users.id AND total > $1)",
+        sql,
+    );
+}
+
+test "SubqueryClause.toSQL - NOT EXISTS" {
+    const testing = std.testing;
+
+    const clause = SubqueryClause{
+        .type = .not_exists,
+        .column = null,
+        .sql = "SELECT 1 FROM posts WHERE user_id = users.id",
+        .args = &[_]QueryArg{},
+    };
+
+    const sql = try clause.toSQL(std.testing.allocator);
+    defer std.testing.allocator.free(sql);
+
+    try testing.expectEqualStrings(
+        "NOT EXISTS (SELECT 1 FROM posts WHERE user_id = users.id)",
+        sql,
+    );
+}
+
+test "DerivedTable creation" {
+    const testing = std.testing;
+
+    const args = [_]QueryArg{QueryArg.fromValue(5)};
+    const derived = DerivedTable{
+        .sql = "SELECT id, COUNT(*) as post_count FROM users GROUP BY id HAVING COUNT(*) > $1",
+        .alias = "user_stats",
+        .args = &args,
+    };
+
+    try testing.expectEqualStrings(
+        "SELECT id, COUNT(*) as post_count FROM users GROUP BY id HAVING COUNT(*) > $1",
+        derived.sql,
+    );
+    try testing.expectEqualStrings("user_stats", derived.alias);
+    try testing.expectEqual(@as(usize, 1), derived.args.len);
+}
+
 test "UpdateResult creation" {
     const testing = std.testing;
 

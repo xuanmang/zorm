@@ -77,6 +77,8 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
         limit_value: ?usize,
         offset_value: ?usize,
         distinct_value: bool,
+        subquery_clauses: std.ArrayList(types.SubqueryClause),
+        derived_table: ?types.DerivedTable,
 
         /// 初始化查询构建器
         pub fn init(allocator: Allocator, db: *DBType, table_name: []const u8) !*Self {
@@ -96,6 +98,8 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 .limit_value = null,
                 .offset_value = null,
                 .distinct_value = false,
+                .subquery_clauses = std.ArrayList(types.SubqueryClause){},
+                .derived_table = null,
             };
 
             return self;
@@ -120,6 +124,23 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
                 self.allocator.free(clause.args);
             }
             self.having_clauses.deinit(self.allocator);
+
+            // 释放子查询子句
+            for (self.subquery_clauses.items) |clause| {
+                self.allocator.free(clause.sql);
+                self.allocator.free(clause.args);
+                if (clause.column) |col| {
+                    self.allocator.free(col);
+                }
+            }
+            self.subquery_clauses.deinit(self.allocator);
+
+            // 释放派生表
+            if (self.derived_table) |dt| {
+                self.allocator.free(dt.sql);
+                self.allocator.free(dt.alias);
+                self.allocator.free(dt.args);
+            }
 
             self.allocator.destroy(self);
         }
@@ -427,6 +448,284 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             return self.distinct();
         }
 
+        /// 添加 WHERE IN 子查询
+        ///
+        /// 使用子查询过滤结果,只保留指定列的值在子查询结果中的记录。
+        ///
+        /// ## 参数
+        /// - column: 要匹配的列名
+        /// - subquery: 子查询构建器(另一个SelectQuery实例)
+        ///
+        /// ## 返回
+        /// - *Self: 支持链式调用
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 查询有已发布文章的用户
+        /// var subquery = try db.newSelect(Post);
+        /// defer subquery.deinit();
+        /// try subquery
+        ///     .column("DISTINCT user_id")
+        ///     .where("published = $1", .{true});
+        ///
+        /// var users = std.ArrayList(User).init(allocator);
+        /// defer users.deinit();
+        ///
+        /// var query = try db.newSelect(User);
+        /// defer query.deinit();
+        /// try query
+        ///     .whereIn("id", subquery)
+        ///     .scan(&users);
+        /// // 生成: SELECT * FROM users WHERE id IN (SELECT DISTINCT user_id FROM posts WHERE published = $1)
+        /// ```
+        pub fn whereIn(self: *Self, col: []const u8, subquery: anytype) !*Self {
+            // 生成子查询SQL
+            const sub_sql = try subquery.buildSQL();
+            errdefer self.allocator.free(sub_sql);
+
+            // 收集子查询参数
+            const sub_args = try subquery.collectArgs();
+            errdefer self.allocator.free(sub_args);
+
+            // 创建SubqueryClause
+            const clause = types.SubqueryClause{
+                .type = .where_in,
+                .column = try self.allocator.dupe(u8, col),
+                .sql = sub_sql,
+                .args = sub_args,
+            };
+
+            try self.subquery_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 WHERE NOT IN 子查询
+        ///
+        /// 使用子查询过滤结果,只保留指定列的值不在子查询结果中的记录。
+        ///
+        /// ## 参数
+        /// - column: 要匹配的列名
+        /// - subquery: 子查询构建器(另一个SelectQuery实例)
+        ///
+        /// ## 返回
+        /// - *Self: 支持链式调用
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 查询没有已发布文章的用户
+        /// var subquery = try db.newSelect(Post);
+        /// defer subquery.deinit();
+        /// try subquery
+        ///     .column("DISTINCT user_id")
+        ///     .where("published = $1", .{true});
+        ///
+        /// var users = std.ArrayList(User).init(allocator);
+        /// defer users.deinit();
+        ///
+        /// var query = try db.newSelect(User);
+        /// defer query.deinit();
+        /// try query
+        ///     .whereNotIn("id", subquery)
+        ///     .scan(&users);
+        /// // 生成: SELECT * FROM users WHERE id NOT IN (SELECT DISTINCT user_id FROM posts WHERE published = $1)
+        /// ```
+        pub fn whereNotIn(self: *Self, col: []const u8, subquery: anytype) !*Self {
+            // 生成子查询SQL
+            const sub_sql = try subquery.buildSQL();
+            errdefer self.allocator.free(sub_sql);
+
+            // 收集子查询参数
+            const sub_args = try subquery.collectArgs();
+            errdefer self.allocator.free(sub_args);
+
+            // 创建SubqueryClause
+            const clause = types.SubqueryClause{
+                .type = .where_not_in,
+                .column = try self.allocator.dupe(u8, col),
+                .sql = sub_sql,
+                .args = sub_args,
+            };
+
+            try self.subquery_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 WHERE EXISTS 子查询
+        ///
+        /// 使用子查询过滤结果,只保留存在关联记录的主查询记录。
+        /// 通常用于检查相关表中是否存在满足条件的记录。
+        ///
+        /// ## 参数
+        /// - subquery: 子查询构建器(另一个SelectQuery实例)
+        ///
+        /// ## 返回
+        /// - *Self: 支持链式调用
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 查询有已发布文章的用户
+        /// var exists_query = try db.newSelect(Post);
+        /// defer exists_query.deinit();
+        /// try exists_query
+        ///     .column("1")
+        ///     .where("posts.user_id = users.id", .{})
+        ///     .where("published = $1", .{true});
+        ///
+        /// var users = std.ArrayList(User).init(allocator);
+        /// defer users.deinit();
+        ///
+        /// var query = try db.newSelect(User);
+        /// defer query.deinit();
+        /// try query
+        ///     .whereExists(exists_query)
+        ///     .scan(&users);
+        /// // 生成: SELECT * FROM users WHERE EXISTS (SELECT 1 FROM posts WHERE posts.user_id = users.id AND published = $1)
+        /// ```
+        pub fn whereExists(self: *Self, subquery: anytype) !*Self {
+            // 生成子查询SQL
+            const sub_sql = try subquery.buildSQL();
+            errdefer self.allocator.free(sub_sql);
+
+            // 收集子查询参数
+            const sub_args = try subquery.collectArgs();
+            errdefer self.allocator.free(sub_args);
+
+            // 创建SubqueryClause
+            const clause = types.SubqueryClause{
+                .type = .exists,
+                .column = null,
+                .sql = sub_sql,
+                .args = sub_args,
+            };
+
+            try self.subquery_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 添加 WHERE NOT EXISTS 子查询
+        ///
+        /// 使用子查询过滤结果,只保留不存在关联记录的主查询记录。
+        /// 通常用于检查相关表中是否不存在满足条件的记录。
+        ///
+        /// ## 参数
+        /// - subquery: 子查询构建器(另一个SelectQuery实例)
+        ///
+        /// ## 返回
+        /// - *Self: 支持链式调用
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 查询没有已发布文章的用户
+        /// var exists_query = try db.newSelect(Post);
+        /// defer exists_query.deinit();
+        /// try exists_query
+        ///     .column("1")
+        ///     .where("posts.user_id = users.id", .{})
+        ///     .where("published = $1", .{true});
+        ///
+        /// var users = std.ArrayList(User).init(allocator);
+        /// defer users.deinit();
+        ///
+        /// var query = try db.newSelect(User);
+        /// defer query.deinit();
+        /// try query
+        ///     .whereNotExists(exists_query)
+        ///     .scan(&users);
+        /// // 生成: SELECT * FROM users WHERE NOT EXISTS (SELECT 1 FROM posts WHERE posts.user_id = users.id AND published = $1)
+        /// ```
+        pub fn whereNotExists(self: *Self, subquery: anytype) !*Self {
+            // 生成子查询SQL
+            const sub_sql = try subquery.buildSQL();
+            errdefer self.allocator.free(sub_sql);
+
+            // 收集子查询参数
+            const sub_args = try subquery.collectArgs();
+            errdefer self.allocator.free(sub_args);
+
+            // 创建SubqueryClause
+            const clause = types.SubqueryClause{
+                .type = .not_exists,
+                .column = null,
+                .sql = sub_sql,
+                .args = sub_args,
+            };
+
+            try self.subquery_clauses.append(self.allocator, clause);
+            return self;
+        }
+
+        /// 使用子查询作为FROM派生表
+        ///
+        /// 将子查询作为临时表用于FROM子句,支持对子查询结果进行进一步过滤和聚合。
+        ///
+        /// ## 参数
+        /// - subquery: 子查询构建器(另一个SelectQuery实例)
+        /// - alias: 派生表的别名(必须)
+        ///
+        /// ## 返回
+        /// - *Self: 支持链式调用
+        ///
+        /// ## 错误
+        /// - error.OutOfMemory: 内存分配失败
+        ///
+        /// ## 示例
+        /// ```zig
+        /// // 查询文章数大于5的用户统计信息
+        /// var derived = try db.newSelect(User);
+        /// defer derived.deinit();
+        /// try derived
+        ///     .column("users.id")
+        ///     .column("users.name")
+        ///     .column("COUNT(posts.id) AS post_count")
+        ///     .leftJoin("posts", "posts.user_id = users.id")
+        ///     .groupBy("users.id, users.name");
+        ///
+        /// var results = std.ArrayList(UserStats).init(allocator);
+        /// defer results.deinit();
+        ///
+        /// var outer_query = try db.newSelect(UserStats);
+        /// defer outer_query.deinit();
+        /// try outer_query
+        ///     .column("*")
+        ///     .fromSubquery(derived, "user_stats")
+        ///     .where("post_count > $1", .{5})
+        ///     .scan(&results);
+        /// // 生成: SELECT * FROM (SELECT users.id, users.name, COUNT(posts.id) AS post_count 
+        /// //                      FROM users LEFT JOIN posts ON posts.user_id = users.id 
+        /// //                      GROUP BY users.id, users.name) AS user_stats 
+        /// //       WHERE post_count > $1
+        /// ```
+        pub fn fromSubquery(self: *Self, subquery: anytype, alias: []const u8) !*Self {
+            // 生成子查询SQL
+            const sub_sql = try subquery.buildSQL();
+            errdefer self.allocator.free(sub_sql);
+
+            // 收集子查询参数
+            const sub_args = try subquery.collectArgs();
+            errdefer self.allocator.free(sub_args);
+
+            // 设置派生表
+            self.derived_table = types.DerivedTable{
+                .sql = sub_sql,
+                .alias = try self.allocator.dupe(u8, alias),
+                .args = sub_args,
+            };
+
+            return self;
+        }
+
         /// 构建 SQL 查询字符串
         ///
         /// 参数:
@@ -470,7 +769,13 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
 
             // FROM
             try buf.appendSlice(allocator, " FROM ");
-            try buf.appendSlice(allocator, self.table_name);
+            if (self.derived_table) |dt| {
+                // 使用派生表
+                try buf.writer(allocator).print("({s}) AS {s}", .{ dt.sql, dt.alias });
+            } else {
+                // 使用普通表名
+                try buf.appendSlice(allocator, self.table_name);
+            }
 
             // JOINs
             for (self.join_clauses.items) |join_clause| {
@@ -487,15 +792,31 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             }
 
             // WHERE
-            if (self.where_clauses.items.len > 0) {
+            if (self.where_clauses.items.len > 0 or self.subquery_clauses.items.len > 0) {
                 try buf.appendSlice(allocator, " WHERE ");
-                for (self.where_clauses.items, 0..) |clause, i| {
-                    if (i > 0) {
+
+                var first = true;
+
+                // 常规 WHERE 条件
+                for (self.where_clauses.items) |clause| {
+                    if (!first) {
                         try buf.appendSlice(allocator, " ");
                         try buf.appendSlice(allocator, clause.operator.toSQL());
                         try buf.appendSlice(allocator, " ");
                     }
                     try buf.appendSlice(allocator, clause.condition);
+                    first = false;
+                }
+
+                // 子查询条件
+                for (self.subquery_clauses.items) |sub_clause| {
+                    if (!first) {
+                        try buf.appendSlice(allocator, " AND ");
+                    }
+                    const sub_sql = try sub_clause.toSQL(allocator);
+                    defer allocator.free(sub_sql);
+                    try buf.appendSlice(allocator, sub_sql);
+                    first = false;
                 }
             }
 
@@ -698,9 +1019,19 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             var args: std.ArrayList(QueryArg) = .{};
             errdefer args.deinit(self.allocator);
 
+            // 收集 FROM 派生表参数 (优先)
+            if (self.derived_table) |dt| {
+                try args.appendSlice(self.allocator, dt.args);
+            }
+
             // 收集 WHERE 子句参数
             for (self.where_clauses.items) |clause| {
                 try args.appendSlice(self.allocator, clause.args);
+            }
+
+            // 收集子查询参数
+            for (self.subquery_clauses.items) |sub_clause| {
+                try args.appendSlice(self.allocator, sub_clause.args);
             }
 
             // 收集 HAVING 子句参数

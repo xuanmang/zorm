@@ -170,11 +170,24 @@ const PostgresTxAdapter = struct {
         _ = try self.driver.exec("ROLLBACK", &[_]QueryArg{});
     }
 
+    fn cleanup(tx_ptr: *core.Tx, allocator: std.mem.Allocator) void {
+        // 释放 tx.ptr 指向的 PostgresTxAdapter
+        const adapter = @as(*PostgresTxAdapter, @ptrCast(@alignCast(tx_ptr.ptr)));
+        allocator.destroy(adapter);
+
+        // 释放 tx.vtable
+        allocator.destroy(@constCast(tx_ptr.vtable));
+
+        // 释放 tx 本身
+        allocator.destroy(tx_ptr);
+    }
+
     const vtable = core.Tx.VTable{
         .exec = exec,
         .query = query,
         .commit = commit,
         .rollback = rollback,
+        .cleanup = cleanup,
     };
 };
 

@@ -211,7 +211,14 @@ pub fn TxManager(comptime dialect: Dialect) type {
                 };
             }
 
-            // 释放内存
+            // 调用 Tx 的 cleanup 方法释放底层资源
+            // cleanup 会释放:
+            // 1. tx.ptr (驱动特定的事务适配器)
+            // 2. tx.vtable (虚函数表)
+            // 3. tx 接口本身
+            self.tx.vtable.cleanup(self.tx, self.allocator);
+
+            // 最后释放 TxManager 自己
             self.allocator.destroy(self);
         }
 

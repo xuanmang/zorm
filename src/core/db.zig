@@ -177,6 +177,8 @@ pub const Tx = struct {
         query: *const fn (ptr: *anyopaque, query: []const u8, args: []const QueryArg) anyerror!*Result,
         commit: *const fn (ptr: *anyopaque) anyerror!void,
         rollback: *const fn (ptr: *anyopaque) anyerror!void,
+        /// 清理事务资源 (用于释放 vtable, ptr, tx 本身)
+        cleanup: *const fn (tx_ptr: *Tx, allocator: Allocator) void,
     };
 
     pub fn exec(self: *Tx, query_str: []const u8, args: []const QueryArg) !void {

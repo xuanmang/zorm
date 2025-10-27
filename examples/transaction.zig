@@ -53,10 +53,13 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
     // ========================================
     std.debug.print("1️⃣  准备：创建测试表\n", .{});
     {
-        // 清理旧表
-        db.exec("DROP TABLE IF EXISTS accounts CASCADE", &[_]zorm.QueryArg{}) catch {};
+        // 清理旧表 - 使用高级 API
+        var drop = try db.newDropTable(Account);
+        defer drop.deinit();
+        _ = drop.ifExists().cascade();
+        drop.exec() catch {};
 
-        // 创建新表
+        // 创建新表 - 使用高级 API
         var create = try db.newCreateTable(Account);
         defer create.deinit();
 
@@ -69,12 +72,13 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
     // ========================================
     std.debug.print("2️⃣  基础事务：BEGIN/COMMIT\n", .{});
     {
-        // 开启事务
-        try db.exec("BEGIN", &[_]zorm.QueryArg{});
+        // 开启事务 - 使用高级 API
+        var tx = try db.beginTx(.{});
+        defer tx.deinit(); // 自动回滚未提交的事务
         std.debug.print("   → BEGIN: 开启事务\n", .{});
 
-        // 插入账户 A
-        var insert_a = try db.newInsert(Account);
+        // 插入账户 A - 使用事务的高级 API
+        var insert_a = try tx.newInsert(Account);
         defer insert_a.deinit();
         _ = try insert_a.value(.{
             .username = "Alice",
@@ -83,8 +87,8 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
         _ = try insert_a.exec();
         std.debug.print("   → INSERT: 创建账户 Alice, 余额: 1000.00\n", .{});
 
-        // 插入账户 B
-        var insert_b = try db.newInsert(Account);
+        // 插入账户 B - 使用事务的高级 API
+        var insert_b = try tx.newInsert(Account);
         defer insert_b.deinit();
         _ = try insert_b.value(.{
             .username = "Bob",
@@ -93,8 +97,8 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
         _ = try insert_b.exec();
         std.debug.print("   → INSERT: 创建账户 Bob, 余额: 500.00\n", .{});
 
-        // 提交事务
-        try db.exec("COMMIT", &[_]zorm.QueryArg{});
+        // 提交事务 - 使用高级 API
+        try tx.commit();
         std.debug.print("   ✓ COMMIT: 事务提交成功\n\n", .{});
     }
 
@@ -137,41 +141,41 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
     // ========================================
     std.debug.print("4️⃣  转账示例：Alice → Bob 转账 300.00 元\n", .{});
     {
-        // 开启事务
-        try db.exec("BEGIN", &[_]zorm.QueryArg{});
+        // 开启事务 - 使用高级 API
+        var tx = try db.beginTx(.{});
+        defer tx.deinit(); // 自动回滚
         std.debug.print("   → BEGIN: 开启转账事务\n", .{});
 
-        // 步骤 1: 检查 Alice 余额
-        var check_balance = try db.newSelect(Account);
+        // 步骤 1: 检查 Alice 余额 - 使用事务的高级 API
+        var check_balance = try tx.newSelect(Account);
         defer check_balance.deinit();
         _ = try check_balance.where("username = $1", .{"Alice"});
         const alice = try check_balance.scanOne();
 
         if (alice.balance < 30000) {
-            // 余额不足，回滚事务
-            try db.exec("ROLLBACK", &[_]zorm.QueryArg{});
+            // 余额不足，回滚事务 - defer 会自动回滚
             std.debug.print("   ✗ ROLLBACK: 余额不足，事务回滚\n\n", .{});
             return;
         }
 
-        // 步骤 2: 从 Alice 扣款
-        var deduct = try db.newUpdate(Account);
+        // 步骤 2: 从 Alice 扣款 - 使用事务的高级 API
+        var deduct = try tx.newUpdate(Account);
         defer deduct.deinit();
         _ = try deduct.set("balance = balance - $1", .{30000}); // 300.00 元
         _ = try deduct.where("username = $2", .{"Alice"});
         _ = try deduct.exec();
         std.debug.print("   → UPDATE: Alice 扣款 300.00 元\n", .{});
 
-        // 步骤 3: 给 Bob 加款
-        var credit = try db.newUpdate(Account);
+        // 步骤 3: 给 Bob 加款 - 使用事务的高级 API
+        var credit = try tx.newUpdate(Account);
         defer credit.deinit();
         _ = try credit.set("balance = balance + $1", .{30000}); // 300.00 元
         _ = try credit.where("username = $2", .{"Bob"});
         _ = try credit.exec();
         std.debug.print("   → UPDATE: Bob 到账 300.00 元\n", .{});
 
-        // 提交事务
-        try db.exec("COMMIT", &[_]zorm.QueryArg{});
+        // 提交事务 - 使用高级 API
+        try tx.commit();
         std.debug.print("   ✓ COMMIT: 转账成功\n\n", .{});
     }
 
@@ -215,19 +219,19 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
     // ========================================
     std.debug.print("6️⃣  演示事务回滚：尝试转账 10000.00 元 (余额不足)\n", .{});
     {
-        // 开启事务
-        try db.exec("BEGIN", &[_]zorm.QueryArg{});
+        // 开启事务 - 使用高级 API
+        var tx = try db.beginTx(.{});
+        defer tx.deinit(); // 自动回滚
         std.debug.print("   → BEGIN: 开启转账事务\n", .{});
 
-        // 检查 Alice 余额
-        var check_balance = try db.newSelect(Account);
+        // 检查 Alice 余额 - 使用事务的高级 API
+        var check_balance = try tx.newSelect(Account);
         defer check_balance.deinit();
         _ = try check_balance.where("username = $1", .{"Alice"});
         const alice = try check_balance.scanOne();
 
         if (alice.balance < 1000000) {
-            // 余额不足，回滚事务
-            try db.exec("ROLLBACK", &[_]zorm.QueryArg{});
+            // 余额不足，回滚事务 - defer 会自动回滚
             const yuan = @divFloor(alice.balance, 100);
             const fen = @mod(alice.balance, 100);
             if (fen < 10) {
@@ -235,10 +239,11 @@ fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocato
             } else {
                 std.debug.print("   ✗ ROLLBACK: 余额不足 (需要 10000.00, 实际只有 {d}.{d})\n\n", .{ yuan, fen });
             }
-        } else {
-            // 正常情况不会执行到这里
-            try db.exec("COMMIT", &[_]zorm.QueryArg{});
+            return; // defer 会自动回滚
         }
+
+        // 正常情况不会执行到这里
+        try tx.commit();
     }
 
     // ========================================

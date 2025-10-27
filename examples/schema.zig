@@ -76,13 +76,26 @@ fn runSchemaOperations(db: *zorm.DB(.postgresql)) !void {
     std.debug.print("1️⃣  清理旧表 (使用 newDropTable)\n", .{});
     {
         // 按依赖顺序删除 (先删除依赖表，再删除被依赖表)
-        const tables = [_][]const u8{ "comments", "posts", "users" };
-        for (tables) |table_name| {
-            const drop_sql = try std.fmt.allocPrint(db.allocator, "DROP TABLE IF EXISTS {s} CASCADE", .{table_name});
-            defer db.allocator.free(drop_sql);
-            db.exec(drop_sql, &[_]zorm.QueryArg{}) catch |err| {
-                std.debug.print("   警告: 删除表 {s} 失败: {any}\n", .{ table_name, err });
-            };
+        // 删除 Comment
+        {
+            var drop = try db.newDropTable(Comment);
+            defer drop.deinit();
+            _ = drop.ifExists().cascade();
+            drop.exec() catch {};
+        }
+        // 删除 Post
+        {
+            var drop = try db.newDropTable(Post);
+            defer drop.deinit();
+            _ = drop.ifExists().cascade();
+            drop.exec() catch {};
+        }
+        // 删除 User
+        {
+            var drop = try db.newDropTable(User);
+            defer drop.deinit();
+            _ = drop.ifExists().cascade();
+            drop.exec() catch {};
         }
         std.debug.print("   ✓ 清理完成\n\n", .{});
     }

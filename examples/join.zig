@@ -71,10 +71,25 @@ fn demonstrateJoinConcepts(db: *zorm.DB(.postgresql), allocator: std.mem.Allocat
     // ========================================
     std.debug.print("1️⃣  准备：创建测试表和数据\n", .{});
     {
-        // 清理旧表
-        db.exec("DROP TABLE IF EXISTS comments CASCADE", &[_]zorm.QueryArg{}) catch {};
-        db.exec("DROP TABLE IF EXISTS posts CASCADE", &[_]zorm.QueryArg{}) catch {};
-        db.exec("DROP TABLE IF EXISTS users CASCADE", &[_]zorm.QueryArg{}) catch {};
+        // 清理旧表 - 使用高级 API
+        {
+            var drop = try db.newDropTable(Comment);
+            defer drop.deinit();
+            _ = drop.ifExists().cascade();
+            drop.exec() catch {};
+        }
+        {
+            var drop = try db.newDropTable(Post);
+            defer drop.deinit();
+            _ = drop.ifExists().cascade();
+            drop.exec() catch {};
+        }
+        {
+            var drop = try db.newDropTable(User);
+            defer drop.deinit();
+            _ = drop.ifExists().cascade();
+            drop.exec() catch {};
+        }
 
         // 创建表
         var create_user = try db.newCreateTable(User);

@@ -19,14 +19,16 @@ const db_mod = @import("db.zig");
 const Dialect = @import("../dialect/dialect.zig").Dialect;
 const zorm_error = @import("../error.zig");
 const Error = zorm_error.Error;
-const types_mod = @import("types.zig");
-const IsolationLevel = types_mod.IsolationLevel;
+const core_types = @import("types.zig");
+const IsolationLevel = core_types.IsolationLevel;
+const types_mod = @import("../types.zig");
+const QueryArg = types_mod.QueryArg;
 
 /// 事务选项 (为 Story 2.5 隔离级别预留)
 pub const TxOptions = struct {
     /// 事务隔离级别 (Story 2.5)
     /// null 表示使用数据库默认级别 (PostgreSQL: read_committed)
-    isolation_level: ?types_mod.IsolationLevel = null,
+    isolation_level: ?IsolationLevel = null,
 
     /// 事务访问模式 (只读/读写)
     read_only: bool = false,
@@ -115,7 +117,7 @@ pub fn TxManager(comptime dialect: Dialect) type {
                 defer allocator.free(sql);
 
                 // 执行设置语句
-                try tx.exec(sql, &[_]types_mod.QueryArg{});
+                try tx.exec(sql, &[_]QueryArg{});
             }
 
             const self = try allocator.create(Self);

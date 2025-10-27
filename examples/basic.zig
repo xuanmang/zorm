@@ -54,8 +54,11 @@ fn runCRUDOperations(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !v
     // ========================================
     std.debug.print("🧹 清理旧表...\n", .{});
     {
-        const drop_sql = "DROP TABLE IF EXISTS users CASCADE";
-        db.exec(drop_sql, &[_]zorm.QueryArg{}) catch |err| {
+        // 使用高级 API
+        var drop = try db.newDropTable(User);
+        defer drop.deinit();
+        _ = drop.ifExists().cascade();
+        drop.exec() catch |err| {
             std.debug.print("   警告: 删除表失败: {any}\n", .{err});
         };
         std.debug.print("   完成\n\n", .{});

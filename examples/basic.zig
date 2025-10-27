@@ -37,7 +37,7 @@ pub fn main() !void {
     std.debug.print("📦 连接数据库: pguser@127.0.0.1:5432/postgres\n\n", .{});
     const dsn = "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres";
 
-    const db = try zorm.connect(allocator, dsn);
+    const db = try zorm.connect(allocator, dsn, null);
     defer db.deinit();
 
     std.debug.print("✓ 数据库连接成功\n\n", .{});

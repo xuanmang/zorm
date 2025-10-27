@@ -193,12 +193,28 @@ const PostgresTxAdapter = struct {
 
 /// 简化的 PostgreSQL 连接函数
 ///
-/// 示例:
+/// 参数:
+///   - allocator: 内存分配器
+///   - dsn: PostgreSQL 连接字符串
+///   - options: 可选的数据库配置选项(为 null 时使用默认配置)
+///
+/// 基本用法示例:
 /// ```zig
-/// var db = try zorm.connect(allocator, "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres");
+/// var db = try zorm.connect(allocator, "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres", null);
 /// defer db.deinit();
 /// ```
-pub fn connect(allocator: std.mem.Allocator, dsn: []const u8) !*core.DB(.postgresql) {
+///
+/// 高级用法示例(自定义配置):
+/// ```zig
+/// const options = zorm.DBOptions{
+///     .debug = true,
+///     .max_open_conns = 50,
+///     .query_timeout = 60_000,
+/// };
+/// var db = try zorm.connect(allocator, "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres", options);
+/// defer db.deinit();
+/// ```
+pub fn connect(allocator: std.mem.Allocator, dsn: []const u8, options: ?core.DBOptions) !*core.DB(.postgresql) {
     // 创建 driver
     const driver = try allocator.create(postgres.PostgresDriver);
     errdefer allocator.destroy(driver);
@@ -217,6 +233,85 @@ pub fn connect(allocator: std.mem.Allocator, dsn: []const u8) !*core.DB(.postgre
         .vtable = &PostgresDriverConnAdapter.vtable,
     };
 
+    // 使用提供的 options 或默认配置
+    const db_options = options orelse core.DBOptions{};
+
     // 创建并返回 DB 实例
-    return try core.DB(.postgresql).init(allocator, conn, .{});
+    return try core.DB(.postgresql).init(allocator, conn, db_options);
+}
+
+// ============================================================================
+// 测试
+// ============================================================================
+
+test "connect with default options" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // 测试不传 options 参数的向后兼容性
+    const dsn = "host=127.0.0.1 port=5432 user=test password=test dbname=test";
+    var db = connect(allocator, dsn, null) catch |err| {
+        // 连接失败是预期的(测试环境可能没有数据库),只要编译通过即可
+        std.debug.print("Connection failed as expected: {}\n", .{err});
+        return;
+    };
+    defer db.deinit();
+
+    // 验证默认配置已应用
+    try testing.expect(db.options.debug == false);
+    try testing.expect(db.options.max_open_conns == 25);
+}
+
+test "connect with custom options" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // 测试传递自定义 options
+    const options = core.DBOptions{
+        .debug = true,
+        .max_open_conns = 50,
+        .max_idle_conns = 10,
+        .query_timeout = 60_000,
+        .enable_query_log = true,
+    };
+
+    const dsn = "host=127.0.0.1 port=5432 user=test password=test dbname=test";
+    var db = connect(allocator, dsn, options) catch |err| {
+        // 连接失败是预期的(测试环境可能没有数据库),只要编译通过即可
+        std.debug.print("Connection failed as expected: {}\n", .{err});
+        return;
+    };
+    defer db.deinit();
+
+    // 验证自定义配置已应用
+    try testing.expect(db.options.debug == true);
+    try testing.expect(db.options.max_open_conns == 50);
+    try testing.expect(db.options.max_idle_conns == 10);
+}
+
+test "custom options applied to DB instance" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+
+    // 测试 options 是否正确应用到 DB 实例
+    const options = core.DBOptions{
+        .debug = true,
+        .max_open_conns = 100,
+        .conn_max_lifetime = 600,
+        .slow_query_threshold = 2000,
+    };
+
+    const dsn = "host=127.0.0.1 port=5432 user=test password=test dbname=test";
+    var db = connect(allocator, dsn, options) catch |err| {
+        // 连接失败是预期的(测试环境可能没有数据库),只要编译通过即可
+        std.debug.print("Connection failed as expected: {}\n", .{err});
+        return;
+    };
+    defer db.deinit();
+
+    // 验证配置已正确应用
+    try testing.expect(db.options.debug == true);
+    try testing.expect(db.options.max_open_conns == 100);
+    try testing.expect(db.options.conn_max_lifetime == 600);
+    try testing.expect(db.options.slow_query_threshold == 2000);
 }

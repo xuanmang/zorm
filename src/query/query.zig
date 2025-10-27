@@ -1092,7 +1092,7 @@ pub fn SelectQuery(comptime T: type, comptime dialect: Dialect) type {
             var row = first_row.?;
 
             // 提取 count 值（第一列）
-            const count_value = row.get(i64, 0);
+            const count_value = try row.getInt(i64, 0);
             return @intCast(count_value);
         }
 
@@ -1846,7 +1846,7 @@ pub fn InsertQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ## 等价于
         /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
         pub fn explain(self: *Self) ![]const u8 {
-            return self.build();
+            return self.build(null);
         }
 
         /// 执行插入查询
@@ -2420,7 +2420,7 @@ pub fn UpdateQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ## 等价于
         /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
         pub fn explain(self: *Self) ![]const u8 {
-            return self.build();
+            return self.build(null);
         }
 
         /// 执行更新查询，返回受影响的行数
@@ -2891,7 +2891,7 @@ pub fn DeleteQuery(comptime T: type, comptime dialect: Dialect) type {
         /// ## 等价于
         /// `explain()` 与 `build()` 的返回值等价，选择语义更清晰的命名。
         pub fn explain(self: *Self) ![]const u8 {
-            return self.build();
+            return self.build(null);
         }
 
         /// 执行删除查询，返回受影响的行数
@@ -3204,7 +3204,7 @@ pub fn CreateTableQuery(comptime T: type, comptime dialect: Dialect) type {
         /// - error.QueryFailed: DDL 执行失败
         /// - error.TableAlreadyExists: 表已存在（未使用 IF NOT EXISTS 时）
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build(null);
+            const query_str = try self.build();
             defer self.allocator.free(query_str);
 
             // 执行 DDL（无参数绑定）
@@ -3760,7 +3760,7 @@ pub fn DropIndexQuery(comptime T: type, comptime dialect: Dialect) type {
 
         /// 执行 DROP INDEX 语句
         pub fn exec(self: *Self) !void {
-            const query_str = try self.build(null);
+            const query_str = try self.build();
             defer self.allocator.free(query_str);
 
             try self.db.exec(query_str, &.{});

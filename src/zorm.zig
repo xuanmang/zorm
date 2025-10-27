@@ -112,6 +112,16 @@ pub const Pool = driver.pool.Pool;
 pub const PoolConfig = driver.pool.PoolConfig;
 pub const PoolStats = driver.pool.PoolStats;
 
+// 导出便捷 API
+/// 简化的 PostgreSQL 连接函数 - 一行代码连接数据库
+///
+/// 示例:
+/// ```zig
+/// const db = try zorm.connect(allocator, "host=127.0.0.1 port=5432 user=pguser password=xxx dbname=mydb");
+/// defer db.deinit();
+/// ```
+pub const connect = @import("convenience.zig").connect;
+
 // 导出常用类型
 pub const DB = core.DB;
 pub const DBOptions = core.DBOptions;

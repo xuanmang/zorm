@@ -212,9 +212,66 @@ pub fn build(b: *std.Build) void {
     const schema_example_step = b.step("run-example-schema", "Run schema management example");
     schema_example_step.dependOn(&run_schema_example.step);
 
+    // Basic CRUD 示例程序
+    const basic_example_module = b.createModule(.{
+        .root_source_file = b.path("examples/basic.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    basic_example_module.addImport("zorm", zorm_module);
+
+    const basic_example = b.addExecutable(.{
+        .name = "basic-example",
+        .root_module = basic_example_module,
+    });
+
+    const run_basic_example = b.addRunArtifact(basic_example);
+    const basic_example_step = b.step("run-example-basic", "Run basic CRUD operations example");
+    basic_example_step.dependOn(&run_basic_example.step);
+
+    // Transaction 示例程序
+    const transaction_example_module = b.createModule(.{
+        .root_source_file = b.path("examples/transaction.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    transaction_example_module.addImport("zorm", zorm_module);
+
+    const transaction_example = b.addExecutable(.{
+        .name = "transaction-example",
+        .root_module = transaction_example_module,
+    });
+
+    const run_transaction_example = b.addRunArtifact(transaction_example);
+    const transaction_example_step = b.step("run-example-transaction", "Run transaction management example");
+    transaction_example_step.dependOn(&run_transaction_example.step);
+
+    // JOIN 示例程序
+    const join_example_module = b.createModule(.{
+        .root_source_file = b.path("examples/join.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    join_example_module.addImport("zorm", zorm_module);
+
+    const join_example = b.addExecutable(.{
+        .name = "join-example",
+        .root_module = join_example_module,
+    });
+
+    const run_join_example = b.addRunArtifact(join_example);
+    const join_example_step = b.step("run-example-join", "Run JOIN query example");
+    join_example_step.dependOn(&run_join_example.step);
+
     // 统一的示例编译步骤
     const examples_step = b.step("examples", "Compile all examples");
     examples_step.dependOn(&schema_example.step);
+    examples_step.dependOn(&basic_example.step);
+    examples_step.dependOn(&transaction_example.step);
+    examples_step.dependOn(&join_example.step);
 
     // ========================================
     // 性能基准测试 (Benchmarks)

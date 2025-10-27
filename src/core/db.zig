@@ -55,6 +55,11 @@ pub const DBOptions = struct {
 
     /// 慢查询阈值 (毫秒)
     slow_query_threshold: u64 = 1000,
+
+    /// 启用 Debug 模式，自动打印所有 SQL 语句和参数
+    /// 仅用于开发环境，生产环境应设置为 false（默认）
+    /// 当启用时，会在执行查询前打印 SQL 和参数，便于调试
+    debug: bool = false,
 };
 
 /// 连接统计信息
@@ -475,6 +480,13 @@ pub fn DB(comptime dialect: Dialect) type {
 
             self.stats.recordQuery();
 
+            // Debug 模式输出
+            if (self.options.debug) {
+                std.log.debug("[ZORM Debug] Executing Query", .{});
+                std.log.debug("SQL: {s}", .{query_str});
+                std.log.debug("Args: {any}", .{args});
+            }
+
             // 执行钩子 - beforeQuery
             for (self.query_hooks.items) |hook| {
                 hook.beforeQuery(query_str, args) catch |err| {
@@ -505,6 +517,11 @@ pub fn DB(comptime dialect: Dialect) type {
                 }
             } else |err| {
                 self.stats.recordError();
+
+                // 错误上下文日志
+                std.log.err("[ZORM Error] {s}", .{@errorName(err)});
+                std.log.err("SQL: {s}", .{query_str});
+                std.log.err("Args: {any}", .{args});
 
                 // 执行钩子 - onError
                 for (self.query_hooks.items) |hook| {
@@ -537,6 +554,13 @@ pub fn DB(comptime dialect: Dialect) type {
 
             self.stats.recordQuery();
 
+            // Debug 模式输出
+            if (self.options.debug) {
+                std.log.debug("[ZORM Debug] Executing Query", .{});
+                std.log.debug("SQL: {s}", .{query_str});
+                std.log.debug("Args: {any}", .{args});
+            }
+
             // 执行钩子 - beforeQuery
             for (self.query_hooks.items) |hook| {
                 hook.beforeQuery(query_str, args) catch |err| {
@@ -568,6 +592,11 @@ pub fn DB(comptime dialect: Dialect) type {
                 return res;
             } else |err| {
                 self.stats.recordError();
+
+                // 错误上下文日志
+                std.log.err("[ZORM Error] {s}", .{@errorName(err)});
+                std.log.err("SQL: {s}", .{query_str});
+                std.log.err("Args: {any}", .{args});
 
                 // 执行钩子 - onError
                 for (self.query_hooks.items) |hook| {

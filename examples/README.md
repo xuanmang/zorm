@@ -62,3 +62,44 @@ zig build examples
 - `.example` 文件是文档参考,不会被编译
 - 实际运行需要数据库驱动支持 (开发中)
 - 所有示例都使用相同的模式,易于理解和复用
+
+## 开发路线图
+
+### 查询构建器 API
+
+ZORM 提供了高层级查询构建器 API (`newInsert()`, `newSelect()`, `newUpdate()`, `newDelete()`),目标是为常见的 CRUD 操作提供类型安全、链式调用的接口。
+
+**当前状态**:
+- ✅ INSERT 操作完全支持
+- ✅ UPDATE 操作完全支持
+- ✅ DELETE 操作完全支持
+- 🚧 SELECT 操作部分支持 (建议复杂查询使用原始 SQL)
+
+**未来计划**:
+- 完善 SELECT 查询构建器的结果遍历 API
+- 添加更多便捷方法(如 `findOne()`, `findAll()` 等)
+- 改进查询结果的类型安全性
+
+**当前最佳实践**:
+1. 对于简单的 INSERT/UPDATE/DELETE,优先使用查询构建器
+2. 对于复杂的 SELECT (特别是多表 JOIN、子查询),使用原始 SQL
+3. 混合使用策略:在同一个项目中根据需求选择合适的方式
+
+示例:
+```zig
+// ✅ 推荐:使用查询构建器进行 INSERT
+var insert = try db.newInsert(User);
+defer insert.deinit();
+_ = try insert.value(.{ .name = "Alice", .age = 30 });
+const result = try insert.exec();
+
+// ✅ 推荐:复杂查询使用原始 SQL
+const sql =
+    \\SELECT users.name, posts.title
+    \\FROM users
+    \\INNER JOIN posts ON posts.user_id = users.id
+    \\WHERE posts.published = true
+;
+var rows = try db.query(sql, &[_]zorm.QueryArg{});
+defer rows.close();
+```

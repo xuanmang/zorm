@@ -540,7 +540,7 @@ test "PerformanceHook basic functionality" {
     // 测试快速查询
     try h.beforeQuery(sql, args);
     try h.afterQuery(sql, args, 500_000_000); // 500ms
-    
+
     stats = perf.getStats();
     try std.testing.expectEqual(@as(u64, 1), stats.total_queries);
     try std.testing.expectEqual(@as(u64, 0), stats.slow_queries);
@@ -549,7 +549,7 @@ test "PerformanceHook basic functionality" {
     // 测试慢查询
     try h.beforeQuery(sql, args);
     try h.afterQuery(sql, args, 2_000_000_000); // 2000ms
-    
+
     stats = perf.getStats();
     try std.testing.expectEqual(@as(u64, 2), stats.total_queries);
     try std.testing.expectEqual(@as(u64, 1), stats.slow_queries);

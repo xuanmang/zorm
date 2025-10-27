@@ -430,12 +430,26 @@ fn execWith2Args(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 
 
 /// 辅助函数:3个参数
 fn execWith3Args(conn: *pg.Conn, sql: []const u8, args: []const QueryArg) !?i64 {
-    // 简化实现:假设最常见的情况是字符串参数
+    // 组合 1: (string, int, int)
     if (args[0] == .string and args[1] == .int and args[2] == .int) {
         return try conn.exec(sql, .{ args[0].string, args[1].int, args[2].int });
-    } else if (args[0] == .int and args[1] == .string) {
-        return try conn.exec(sql, .{ args[0].int, args[1].string, if (args[2] == .int) args[2].int else @as(i64, @intCast(args[2].uint)) });
     }
+
+    // 组合 2: (int, string, int)
+    if (args[0] == .int and args[1] == .string and args[2] == .int) {
+        return try conn.exec(sql, .{ args[0].int, args[1].string, args[2].int });
+    }
+
+    // 组合 3: (int, string, uint)
+    if (args[0] == .int and args[1] == .string and args[2] == .uint) {
+        return try conn.exec(sql, .{ args[0].int, args[1].string, @as(i64, @intCast(args[2].uint)) });
+    }
+
+    // 组合 4: (int, string, bool) - 用于 Post 插入 (user_id, title, published)
+    if (args[0] == .int and args[1] == .string and args[2] == .bool) {
+        return try conn.exec(sql, .{ args[0].int, args[1].string, args[2].bool });
+    }
+
     // 默认处理:尝试转换为字符串
     return error.UnsupportedFeature;
 }

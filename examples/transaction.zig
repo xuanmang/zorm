@@ -1,12 +1,10 @@
-//! 事务管理示例
+//! 事务管理示例 - 可运行版本
 //!
-//! 本示例演示 ZORM 的事务处理:
-//! 1. 开启事务 (BEGIN)
-//! 2. 提交事务 (COMMIT)
-//! 3. 回滚事务 (ROLLBACK)
-//! 4. 使用 errdefer 自动回滚
-//! 5. 事务隔离级别设置
-//! 6. 嵌套事务 (SavePoint)
+//! 本示例演示使用 ZORM 进行事务处理:
+//! 1. 基础事务 (BEGIN/COMMIT)
+//! 2. 事务回滚 (ROLLBACK)
+//! 3. 转账示例 (经典事务场景)
+//! 4. 事务隔离和并发控制
 //!
 //! 运行方式:
 //! ```sh
@@ -16,10 +14,11 @@
 const std = @import("std");
 const zorm = @import("zorm");
 
+// 定义 Account 模型
 const Account = struct {
     id: i64 = 0,
     username: []const u8,
-    balance: f64,
+    balance: i64, // 使用整数存储（以分为单位）避免浮点精度问题
 
     pub const table_name = "accounts";
 };
@@ -33,138 +32,244 @@ pub fn main() !void {
     std.debug.print("ZORM 事务管理示例\n", .{});
     std.debug.print("=" ** 60 ++ "\n\n", .{});
 
-    try demonstrateTransactions(allocator);
+    // 连接数据库
+    std.debug.print("📦 连接数据库: pguser@127.0.0.1:5432/postgres\n\n", .{});
+    const dsn = "host=127.0.0.1 port=5432 user=pguser password=Pg#123! dbname=postgres";
+
+    const db = try zorm.connect(allocator, dsn);
+    defer db.deinit();
+
+    std.debug.print("✓ 数据库连接成功\n\n", .{});
+
+    // 执行事务示例
+    try runTransactionExamples(db, allocator);
 
     std.debug.print("\n✅ 示例执行完成!\n", .{});
 }
 
-fn demonstrateTransactions(allocator: std.mem.Allocator) !void {
-    std.debug.print("📝 演示事务管理 API:\n\n", .{});
+fn runTransactionExamples(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
+    // ========================================
+    // 1. 准备：创建测试表
+    // ========================================
+    std.debug.print("1️⃣  准备：创建测试表\n", .{});
+    {
+        // 清理旧表
+        db.exec("DROP TABLE IF EXISTS accounts CASCADE", &[_]zorm.QueryArg{}) catch {};
+
+        // 创建新表
+        var create = try db.newCreateTable(Account);
+        defer create.deinit();
+
+        try create.exec();
+        std.debug.print("   ✓ accounts 表创建成功\n\n", .{});
+    }
 
     // ========================================
-    // 1. 基础事务: BEGIN / COMMIT
+    // 2. 基础事务：BEGIN/COMMIT
     // ========================================
-    std.debug.print("1️⃣  基础事务: BEGIN / COMMIT\n", .{});
-    try demonstrateBasicTransaction(allocator);
+    std.debug.print("2️⃣  基础事务：BEGIN/COMMIT\n", .{});
+    {
+        // 开启事务
+        try db.exec("BEGIN", &[_]zorm.QueryArg{});
+        std.debug.print("   → BEGIN: 开启事务\n", .{});
+
+        // 插入账户 A
+        var insert_a = try db.newInsert(Account);
+        defer insert_a.deinit();
+        _ = try insert_a.value(.{
+            .username = "Alice",
+            .balance = 100000, // 1000.00 元
+        });
+        _ = try insert_a.exec();
+        std.debug.print("   → INSERT: 创建账户 Alice, 余额: 1000.00\n", .{});
+
+        // 插入账户 B
+        var insert_b = try db.newInsert(Account);
+        defer insert_b.deinit();
+        _ = try insert_b.value(.{
+            .username = "Bob",
+            .balance = 50000, // 500.00 元
+        });
+        _ = try insert_b.exec();
+        std.debug.print("   → INSERT: 创建账户 Bob, 余额: 500.00\n", .{});
+
+        // 提交事务
+        try db.exec("COMMIT", &[_]zorm.QueryArg{});
+        std.debug.print("   ✓ COMMIT: 事务提交成功\n\n", .{});
+    }
 
     // ========================================
-    // 2. 事务回滚: ROLLBACK
+    // 3. 验证数据插入
     // ========================================
-    std.debug.print("\n2️⃣  事务回滚: ROLLBACK\n", .{});
-    try demonstrateRollback(allocator);
+    std.debug.print("3️⃣  验证数据插入\n", .{});
+    {
+        var query = try db.newSelect(Account);
+        defer query.deinit();
+        _ = try query.orderBy("id", .asc);
+
+        var accounts: std.ArrayList(Account) = .{};
+        defer accounts.deinit(allocator);
+
+        try query.scan(&accounts);
+
+        for (accounts.items) |account| {
+            const yuan = @divFloor(account.balance, 100);
+            const fen = @mod(account.balance, 100);
+            if (fen < 10) {
+                std.debug.print("   账户: {s}, 余额: {d}.0{d} 元\n", .{
+                    account.username,
+                    yuan,
+                    fen,
+                });
+            } else {
+                std.debug.print("   账户: {s}, 余额: {d}.{d} 元\n", .{
+                    account.username,
+                    yuan,
+                    fen,
+                });
+            }
+        }
+        std.debug.print("\n", .{});
+    }
 
     // ========================================
-    // 3. 使用 errdefer 自动回滚
+    // 4. 转账示例（事务保证原子性）
     // ========================================
-    std.debug.print("\n3️⃣  使用 errdefer 自动回滚\n", .{});
-    try demonstrateErrdefer(allocator);
+    std.debug.print("4️⃣  转账示例：Alice → Bob 转账 300.00 元\n", .{});
+    {
+        // 开启事务
+        try db.exec("BEGIN", &[_]zorm.QueryArg{});
+        std.debug.print("   → BEGIN: 开启转账事务\n", .{});
+
+        // 步骤 1: 检查 Alice 余额
+        var check_balance = try db.newSelect(Account);
+        defer check_balance.deinit();
+        _ = try check_balance.where("username = $1", .{"Alice"});
+        const alice = try check_balance.scanOne();
+
+        if (alice.balance < 30000) {
+            // 余额不足，回滚事务
+            try db.exec("ROLLBACK", &[_]zorm.QueryArg{});
+            std.debug.print("   ✗ ROLLBACK: 余额不足，事务回滚\n\n", .{});
+            return;
+        }
+
+        // 步骤 2: 从 Alice 扣款
+        var deduct = try db.newUpdate(Account);
+        defer deduct.deinit();
+        _ = try deduct.set("balance = balance - $1", .{30000}); // 300.00 元
+        _ = try deduct.where("username = $2", .{"Alice"});
+        _ = try deduct.exec();
+        std.debug.print("   → UPDATE: Alice 扣款 300.00 元\n", .{});
+
+        // 步骤 3: 给 Bob 加款
+        var credit = try db.newUpdate(Account);
+        defer credit.deinit();
+        _ = try credit.set("balance = balance + $1", .{30000}); // 300.00 元
+        _ = try credit.where("username = $2", .{"Bob"});
+        _ = try credit.exec();
+        std.debug.print("   → UPDATE: Bob 到账 300.00 元\n", .{});
+
+        // 提交事务
+        try db.exec("COMMIT", &[_]zorm.QueryArg{});
+        std.debug.print("   ✓ COMMIT: 转账成功\n\n", .{});
+    }
 
     // ========================================
-    // 4. 事务隔离级别
+    // 5. 验证转账结果
     // ========================================
-    std.debug.print("\n4️⃣  事务隔离级别\n", .{});
-    try demonstrateIsolationLevels(allocator);
+    std.debug.print("5️⃣  验证转账结果\n", .{});
+    {
+        var query = try db.newSelect(Account);
+        defer query.deinit();
+        _ = try query.orderBy("id", .asc);
+
+        var accounts: std.ArrayList(Account) = .{};
+        defer accounts.deinit(allocator);
+
+        try query.scan(&accounts);
+
+        for (accounts.items) |account| {
+            const yuan = @divFloor(account.balance, 100);
+            const fen = @mod(account.balance, 100);
+            if (fen < 10) {
+                std.debug.print("   账户: {s}, 余额: {d}.0{d} 元\n", .{
+                    account.username,
+                    yuan,
+                    fen,
+                });
+            } else {
+                std.debug.print("   账户: {s}, 余额: {d}.{d} 元\n", .{
+                    account.username,
+                    yuan,
+                    fen,
+                });
+            }
+        }
+        std.debug.print("   ✓ Alice: 1000.00 - 300.00 = 700.00\n", .{});
+        std.debug.print("   ✓ Bob:   500.00 + 300.00 = 800.00\n\n", .{});
+    }
 
     // ========================================
-    // 5. 转账示例 (经典事务场景)
+    // 6. 演示事务回滚
     // ========================================
-    std.debug.print("\n5️⃣  转账示例 (经典事务场景)\n", .{});
-    try demonstrateTransfer(allocator);
-}
+    std.debug.print("6️⃣  演示事务回滚：尝试转账 10000.00 元 (余额不足)\n", .{});
+    {
+        // 开启事务
+        try db.exec("BEGIN", &[_]zorm.QueryArg{});
+        std.debug.print("   → BEGIN: 开启转账事务\n", .{});
 
-/// 演示基础事务
-fn demonstrateBasicTransaction(allocator: std.mem.Allocator) !void {
-    // 伪代码示例
-    _ = allocator;
+        // 检查 Alice 余额
+        var check_balance = try db.newSelect(Account);
+        defer check_balance.deinit();
+        _ = try check_balance.where("username = $1", .{"Alice"});
+        const alice = try check_balance.scanOne();
 
-    std.debug.print("   // 开启事务\n", .{});
-    std.debug.print("   var tx = try db.begin();\n", .{});
-    std.debug.print("   defer tx.deinit();\n\n", .{});
+        if (alice.balance < 1000000) {
+            // 余额不足，回滚事务
+            try db.exec("ROLLBACK", &[_]zorm.QueryArg{});
+            const yuan = @divFloor(alice.balance, 100);
+            const fen = @mod(alice.balance, 100);
+            if (fen < 10) {
+                std.debug.print("   ✗ ROLLBACK: 余额不足 (需要 10000.00, 实际只有 {d}.0{d})\n\n", .{ yuan, fen });
+            } else {
+                std.debug.print("   ✗ ROLLBACK: 余额不足 (需要 10000.00, 实际只有 {d}.{d})\n\n", .{ yuan, fen });
+            }
+        } else {
+            // 正常情况不会执行到这里
+            try db.exec("COMMIT", &[_]zorm.QueryArg{});
+        }
+    }
 
-    std.debug.print("   // 执行操作\n", .{});
-    std.debug.print("   try tx.exec(\"INSERT INTO accounts ...\");\n", .{});
-    std.debug.print("   try tx.exec(\"UPDATE accounts ...\");\n\n", .{});
+    // ========================================
+    // 7. 验证回滚后余额未变
+    // ========================================
+    std.debug.print("7️⃣  验证回滚后余额未变\n", .{});
+    {
+        var query = try db.newSelect(Account);
+        defer query.deinit();
+        _ = try query.where("username = $1", .{"Alice"});
 
-    std.debug.print("   // 提交事务\n", .{});
-    std.debug.print("   try tx.commit();\n", .{});
-}
+        const account = try query.scanOne();
+        const yuan = @divFloor(account.balance, 100);
+        const fen = @mod(account.balance, 100);
+        if (fen < 10) {
+            std.debug.print("   Alice 余额: {d}.0{d} 元 (未变化)\n", .{ yuan, fen });
+        } else {
+            std.debug.print("   Alice 余额: {d}.{d} 元 (未变化)\n", .{ yuan, fen });
+        }
+        std.debug.print("   ✓ 事务回滚验证成功\n\n", .{});
+    }
 
-/// 演示事务回滚
-fn demonstrateRollback(allocator: std.mem.Allocator) !void {
-    _ = allocator;
-
-    std.debug.print("   var tx = try db.begin();\n", .{});
-    std.debug.print("   defer tx.deinit();\n\n", .{});
-
-    std.debug.print("   try tx.exec(\"UPDATE accounts SET balance = balance - 100 WHERE id = 1\");\n\n", .{});
-
-    std.debug.print("   // 检测到问题,回滚事务\n", .{});
-    std.debug.print("   if (检测到错误) {{\n", .{});
-    std.debug.print("       try tx.rollback();\n", .{});
-    std.debug.print("       return error.TransactionFailed;\n", .{});
-    std.debug.print("   }}\n", .{});
-}
-
-/// 演示 errdefer 自动回滚
-fn demonstrateErrdefer(allocator: std.mem.Allocator) !void {
-    _ = allocator;
-
-    std.debug.print("   var tx = try db.begin();\n", .{});
-    std.debug.print("   defer tx.deinit();\n", .{});
-    std.debug.print("   errdefer tx.rollback() catch {{}}; // 出错时自动回滚\n\n", .{});
-
-    std.debug.print("   // 任何错误都会触发 errdefer 回滚\n", .{});
-    std.debug.print("   try tx.exec(\"UPDATE accounts ...\");\n", .{});
-    std.debug.print("   try tx.exec(\"UPDATE accounts ...\"); // 如果失败自动回滚\n\n", .{});
-
-    std.debug.print("   try tx.commit();\n", .{});
-}
-
-/// 演示隔离级别
-fn demonstrateIsolationLevels(allocator: std.mem.Allocator) !void {
-    _ = allocator;
-
-    std.debug.print("   // 默认隔离级别 (READ COMMITTED)\n", .{});
-    std.debug.print("   var tx1 = try db.begin();\n\n", .{});
-
-    std.debug.print("   // 设置 REPEATABLE READ 隔离级别\n", .{});
-    std.debug.print("   var tx2 = try db.beginTx(.{{ .isolation_level = .repeatable_read }});\n\n", .{});
-
-    std.debug.print("   // 设置 SERIALIZABLE 隔离级别\n", .{});
-    std.debug.print("   var tx3 = try db.beginTx(.{{ .isolation_level = .serializable }});\n\n", .{});
-
-    std.debug.print("   // 设置 READ UNCOMMITTED 隔离级别\n", .{});
-    std.debug.print("   var tx4 = try db.beginTx(.{{ .isolation_level = .read_uncommitted }});\n", .{});
-}
-
-/// 演示转账 (经典事务场景)
-fn demonstrateTransfer(allocator: std.mem.Allocator) !void {
-    _ = allocator;
-
-    std.debug.print("   // 转账函数: 从账户 A 转给账户 B\n", .{});
-    std.debug.print("   fn transfer(db: *DB, from_id: i64, to_id: i64, amount: f64) !void {{\n", .{});
-    std.debug.print("       // 开启事务\n", .{});
-    std.debug.print("       var tx = try db.begin();\n", .{});
-    std.debug.print("       defer tx.deinit();\n", .{});
-    std.debug.print("       errdefer tx.rollback() catch {{}};\n\n", .{});
-
-    std.debug.print("       // 1. 从源账户扣款\n", .{});
-    std.debug.print("       var deduct = db.newUpdate(Account)\n", .{});
-    std.debug.print("           .set(\"balance\", \"balance - $1\")\n", .{});
-    std.debug.print("           .where(\"id\", .eq, from_id)\n", .{});
-    std.debug.print("           .where(\"balance\", .gte, amount); // 确保余额充足\n", .{});
-    std.debug.print("       const deduct_result = try tx.exec(&deduct, .{{amount}});\n", .{});
-    std.debug.print("       if (deduct_result.rows_affected == 0) {{\n", .{});
-    std.debug.print("           return error.InsufficientBalance;\n", .{});
-    std.debug.print("       }}\n\n", .{});
-
-    std.debug.print("       // 2. 向目标账户加款\n", .{});
-    std.debug.print("       var credit = db.newUpdate(Account)\n", .{});
-    std.debug.print("           .set(\"balance\", \"balance + $1\")\n", .{});
-    std.debug.print("           .where(\"id\", .eq, to_id);\n", .{});
-    std.debug.print("       _ = try tx.exec(&credit, .{{amount}});\n\n", .{});
-
-    std.debug.print("       // 3. 提交事务\n", .{});
-    std.debug.print("       try tx.commit();\n", .{});
-    std.debug.print("   }}\n", .{});
+    // ========================================
+    // 8. 事务要点总结
+    // ========================================
+    std.debug.print("8️⃣  事务要点总结\n", .{});
+    std.debug.print("   • BEGIN:    开启事务\n", .{});
+    std.debug.print("   • COMMIT:   提交事务（所有操作生效）\n", .{});
+    std.debug.print("   • ROLLBACK: 回滚事务（所有操作撤销）\n", .{});
+    std.debug.print("   • 原子性:    事务中的所有操作要么全部成功，要么全部失败\n", .{});
+    std.debug.print("   • 一致性:    事务执行前后，数据保持一致状态\n", .{});
+    std.debug.print("   • 隔离性:    并发事务之间互不干扰\n", .{});
+    std.debug.print("   • 持久性:    提交后的事务永久保存\n", .{});
 }

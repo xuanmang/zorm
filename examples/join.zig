@@ -63,9 +63,24 @@ pub fn main() !void {
     std.debug.print("\n✅ 示例执行完成!\n", .{});
 }
 
-fn demonstrateJoinConcepts(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
-    _ = allocator;
+// JOIN 查询结果结构体
+const UserPost = struct {
+    user_name: []const u8,
+    post_title: []const u8,
+};
 
+const UserPostComment = struct {
+    user_name: []const u8,
+    post_title: []const u8,
+    comment_content: []const u8,
+};
+
+const UserPostCount = struct {
+    user_name: []const u8,
+    post_count: i64,
+};
+
+fn demonstrateJoinConcepts(db: *zorm.DB(.postgresql), allocator: std.mem.Allocator) !void {
     // ========================================
     // 1. 准备：创建测试表和数据
     // ========================================
@@ -134,64 +149,127 @@ fn demonstrateJoinConcepts(db: *zorm.DB(.postgresql), allocator: std.mem.Allocat
     }
 
     // ========================================
-    // 2. INNER JOIN 示例
+    // 2. INNER JOIN 示例 - 使用 newRaw() 高级 API
     // ========================================
-    std.debug.print("2️⃣  INNER JOIN - 查询已发布文章及作者\n", .{});
-    std.debug.print("\n   SQL 示例:\n", .{});
-    std.debug.print("   SELECT users.name, posts.title\n", .{});
-    std.debug.print("   FROM posts\n", .{});
-    std.debug.print("   INNER JOIN users ON posts.user_id = users.id\n", .{});
-    std.debug.print("   WHERE posts.published = true\n\n", .{});
+    std.debug.print("2️⃣  INNER JOIN - 查询已发布文章及作者 (使用 newRaw API)\n", .{});
+    {
+        const sql =
+            \\SELECT users.name as user_name, posts.title as post_title
+            \\FROM posts
+            \\INNER JOIN users ON posts.user_id = users.id
+            \\WHERE posts.published = $1
+        ;
 
-    std.debug.print("   说明:\n", .{});
-    std.debug.print("   • INNER JOIN 只返回两个表中都有匹配的行\n", .{});
-    std.debug.print("   • 查询结果包含: 用户名, 文章标题\n", .{});
-    std.debug.print("   • 只显示已发布的文章\n\n", .{});
+        std.debug.print("\n   SQL: {s}\n", .{sql});
 
-    // ========================================
-    // 3. LEFT JOIN 示例
-    // ========================================
-    std.debug.print("3️⃣  LEFT JOIN - 查询所有用户及其文章\n", .{});
-    std.debug.print("\n   SQL 示例:\n", .{});
-    std.debug.print("   SELECT users.name, posts.title\n", .{});
-    std.debug.print("   FROM users\n", .{});
-    std.debug.print("   LEFT JOIN posts ON posts.user_id = users.id\n\n", .{});
+        // 使用 newRaw() 高级 API 执行查询
+        var query = try db.newRaw(sql, .{true});
+        defer query.deinit();
 
-    std.debug.print("   说明:\n", .{});
-    std.debug.print("   • LEFT JOIN 返回左表(users)的所有行\n", .{});
-    std.debug.print("   • 如果右表没有匹配，则相应字段为 NULL\n", .{});
-    std.debug.print("   • 结果包含所有用户，即使他们没有发表文章\n\n", .{});
+        var results: std.ArrayList(UserPost) = .{};
+        defer results.deinit(allocator);
 
-    // ========================================
-    // 4. 多表 JOIN 示例
-    // ========================================
-    std.debug.print("4️⃣  多表 JOIN - 查询文章、作者、评论\n", .{});
-    std.debug.print("\n   SQL 示例:\n", .{});
-    std.debug.print("   SELECT users.name, posts.title, comments.content\n", .{});
-    std.debug.print("   FROM posts\n", .{});
-    std.debug.print("   INNER JOIN users ON posts.user_id = users.id\n", .{});
-    std.debug.print("   INNER JOIN comments ON comments.post_id = posts.id\n\n", .{});
+        try query.scan(UserPost, &results);
 
-    std.debug.print("   说明:\n", .{});
-    std.debug.print("   • 可以连接多个表\n", .{});
-    std.debug.print("   • 每个 JOIN 都需要指定连接条件\n", .{});
-    std.debug.print("   • 查询结果: 用户名, 文章标题, 评论内容\n\n", .{});
+        std.debug.print("   查询结果:\n", .{});
+        for (results.items, 1..) |row, i| {
+            std.debug.print("   [{d}] 用户: {s}, 文章: {s}\n", .{ i, row.user_name, row.post_title });
+        }
+        std.debug.print("   ✓ 共 {} 条记录\n\n", .{results.items.len});
+    }
 
     // ========================================
-    // 5. 聚合 JOIN 示例
+    // 3. LEFT JOIN 示例 - 使用 newRaw() 高级 API
     // ========================================
-    std.debug.print("5️⃣  聚合 JOIN - 统计每个用户的文章数\n", .{});
-    std.debug.print("\n   SQL 示例:\n", .{});
-    std.debug.print("   SELECT users.name, COUNT(posts.id) as post_count\n", .{});
-    std.debug.print("   FROM users\n", .{});
-    std.debug.print("   LEFT JOIN posts ON posts.user_id = users.id\n", .{});
-    std.debug.print("   GROUP BY users.id, users.name\n", .{});
-    std.debug.print("   ORDER BY post_count DESC\n\n", .{});
+    std.debug.print("3️⃣  LEFT JOIN - 查询所有用户及其文章 (使用 newRaw API)\n", .{});
+    {
+        const sql =
+            \\SELECT users.name as user_name, COALESCE(posts.title, '(无文章)') as post_title
+            \\FROM users
+            \\LEFT JOIN posts ON posts.user_id = users.id
+            \\ORDER BY users.id, posts.id
+        ;
 
-    std.debug.print("   说明:\n", .{});
-    std.debug.print("   • 使用 COUNT() 聚合函数统计文章数\n", .{});
-    std.debug.print("   • GROUP BY 对结果分组\n", .{});
-    std.debug.print("   • ORDER BY 对结果排序\n\n", .{});
+        std.debug.print("\n   SQL: {s}\n", .{sql});
+
+        var query = try db.newRaw(sql, .{});
+        defer query.deinit();
+
+        var results: std.ArrayList(UserPost) = .{};
+        defer results.deinit(allocator);
+
+        try query.scan(UserPost, &results);
+
+        std.debug.print("   查询结果:\n", .{});
+        for (results.items, 1..) |row, i| {
+            std.debug.print("   [{d}] 用户: {s}, 文章: {s}\n", .{ i, row.user_name, row.post_title });
+        }
+        std.debug.print("   ✓ 共 {} 条记录 (注意李四显示为无文章)\n\n", .{results.items.len});
+    }
+
+    // ========================================
+    // 4. 多表 JOIN 示例 - 使用 newRaw() 高级 API
+    // ========================================
+    std.debug.print("4️⃣  多表 JOIN - 查询文章、作者、评论 (使用 newRaw API)\n", .{});
+    {
+        const sql =
+            \\SELECT users.name as user_name, posts.title as post_title, comments.content as comment_content
+            \\FROM posts
+            \\INNER JOIN users ON posts.user_id = users.id
+            \\INNER JOIN comments ON comments.post_id = posts.id
+        ;
+
+        std.debug.print("\n   SQL: {s}\n", .{sql});
+
+        var query = try db.newRaw(sql, .{});
+        defer query.deinit();
+
+        var results: std.ArrayList(UserPostComment) = .{};
+        defer results.deinit(allocator);
+
+        try query.scan(UserPostComment, &results);
+
+        std.debug.print("   查询结果:\n", .{});
+        for (results.items, 1..) |row, i| {
+            std.debug.print("   [{d}] 用户: {s}, 文章: {s}, 评论: {s}\n", .{
+                i,
+                row.user_name,
+                row.post_title,
+                row.comment_content,
+            });
+        }
+        std.debug.print("   ✓ 共 {} 条记录\n\n", .{results.items.len});
+    }
+
+    // ========================================
+    // 5. 聚合 JOIN 示例 - 使用 newRaw() 高级 API
+    // ========================================
+    std.debug.print("5️⃣  聚合 JOIN - 统计每个用户的文章数 (使用 newRaw API)\n", .{});
+    {
+        const sql =
+            \\SELECT users.name as user_name, COUNT(posts.id) as post_count
+            \\FROM users
+            \\LEFT JOIN posts ON posts.user_id = users.id
+            \\GROUP BY users.id, users.name
+            \\ORDER BY post_count DESC
+        ;
+
+        std.debug.print("\n   SQL: {s}\n", .{sql});
+
+        var query = try db.newRaw(sql, .{});
+        defer query.deinit();
+
+        var results: std.ArrayList(UserPostCount) = .{};
+        defer results.deinit(allocator);
+
+        try query.scan(UserPostCount, &results);
+
+        std.debug.print("   查询结果:\n", .{});
+        for (results.items, 1..) |row, i| {
+            std.debug.print("   [{d}] 用户: {s}, 文章数: {d}\n", .{ i, row.user_name, row.post_count });
+        }
+        std.debug.print("   ✓ 共 {} 条记录\n\n", .{results.items.len});
+    }
 
     // ========================================
     // 6. JOIN 类型对比
@@ -218,8 +296,9 @@ fn demonstrateJoinConcepts(db: *zorm.DB(.postgresql), allocator: std.mem.Allocat
     // ========================================
     std.debug.print("7️⃣  ZORM JOIN API 路线图\n\n", .{});
     std.debug.print("   当前版本:\n", .{});
-    std.debug.print("   • ✓ 使用原始 SQL 进行 JOIN 查询\n", .{});
-    std.debug.print("   • ✓ db.exec() / db.query() 支持所有 SQL\n\n", .{});
+    std.debug.print("   • ✓ 使用 newRaw() 高级 API 进行 JOIN 查询\n", .{});
+    std.debug.print("   • ✓ 类型安全的结果映射\n", .{});
+    std.debug.print("   • ✓ 支持所有 SQL JOIN 语法\n\n", .{});
 
     std.debug.print("   计划功能 (未来版本):\n", .{});
     std.debug.print("   • query.innerJoin(\"table\", \"condition\")\n", .{});

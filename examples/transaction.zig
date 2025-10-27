@@ -99,10 +99,10 @@ fn demonstrateRollback(allocator: std.mem.Allocator) !void {
     std.debug.print("   try tx.exec(\"UPDATE accounts SET balance = balance - 100 WHERE id = 1\");\n\n", .{});
 
     std.debug.print("   // 检测到问题,回滚事务\n", .{});
-    std.debug.print("   if (检测到错误) {\n", .{});
+    std.debug.print("   if (检测到错误) {{\n", .{});
     std.debug.print("       try tx.rollback();\n", .{});
     std.debug.print("       return error.TransactionFailed;\n", .{});
-    std.debug.print("   }\n", .{});
+    std.debug.print("   }}\n", .{});
 }
 
 /// 演示 errdefer 自动回滚
@@ -111,7 +111,7 @@ fn demonstrateErrdefer(allocator: std.mem.Allocator) !void {
 
     std.debug.print("   var tx = try db.begin();\n", .{});
     std.debug.print("   defer tx.deinit();\n", .{});
-    std.debug.print("   errdefer tx.rollback() catch {}; // 出错时自动回滚\n\n", .{});
+    std.debug.print("   errdefer tx.rollback() catch {{}}; // 出错时自动回滚\n\n", .{});
 
     std.debug.print("   // 任何错误都会触发 errdefer 回滚\n", .{});
     std.debug.print("   try tx.exec(\"UPDATE accounts ...\");\n", .{});
